@@ -21,7 +21,7 @@ import sys
 from datetime import datetime, timezone
 
 try:
-    from ib_async import IB, PortfolioItem
+    from ib_async import IB
 except ImportError:
     print(
         json.dumps(
@@ -97,12 +97,9 @@ async def fetch_greeks(host: str, port: int, client_id: int) -> dict:
             if is_option:
                 ticker = ib.reqMktData(contract, genericTickList="", snapshot=True, regulatorySnapshot=False)
                 try:
-                    await asyncio.wait_for(
-                        ib.waitOnUpdateAsync(timeout=MARKET_DATA_TIMEOUT),
-                        timeout=MARKET_DATA_TIMEOUT + 1,
-                    )
-                except asyncio.TimeoutError:
-                    pass
+                    await asyncio.sleep(MARKET_DATA_TIMEOUT)
+                except asyncio.CancelledError:
+                    raise
                 greeks_raw = ticker.modelGreeks or ticker.lastGreeks
                 position_greeks = _greeks_to_dict(greeks_raw)
                 ib.cancelMktData(contract)
