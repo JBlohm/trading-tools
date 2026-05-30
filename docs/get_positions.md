@@ -1,6 +1,6 @@
-# get_portfolio — Portfolio Position Tool
+# get_positions — Positions Tool
 
-Retrieves the current portfolio positions from Interactive Brokers TWS and prints them as JSON.
+Retrieves the current positions from Interactive Brokers TWS and prints them as JSON.
 
 ## Prerequisites
 
@@ -17,7 +17,7 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python tools/get_portfolio.py [--host HOST] [--paper | --live | --port PORT]
+python tools/get_positions.py [--host HOST] [--paper | --live | --port PORT]
 ```
 
 ### Options
@@ -33,16 +33,16 @@ python tools/get_portfolio.py [--host HOST] [--paper | --live | --port PORT]
 
 ```bash
 # Paper trading (default)
-python tools/get_portfolio.py
+python tools/get_positions.py
 
 # Live trading
-python tools/get_portfolio.py --live
+python tools/get_positions.py --live
 
 # TWS on a different machine
-python tools/get_portfolio.py --host 10.0.0.5
+python tools/get_positions.py --host 10.0.0.5
 
 # IB Gateway (paper)
-python tools/get_portfolio.py --host 127.0.0.1 --port 4002
+python tools/get_positions.py --host 127.0.0.1 --port 4002
 ```
 
 ## Output
@@ -85,7 +85,7 @@ If TWS is unreachable, the tool exits with code `1` and prints a JSON error to *
 
 Redirect stderr to suppress error output:
 ```bash
-python tools/get_portfolio.py 2>/dev/null
+python tools/get_positions.py 2>/dev/null
 ```
 
 ## Connection Details

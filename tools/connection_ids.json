@@ -2,8 +2,8 @@
   "description": "Register of TWS API connection IDs used by trading tools. Each tool uses a unique ID so they can run in parallel without interfering.",
   "ids": {
     "1000": {
-      "tool": "get_portfolio.py",
-      "description": "Reads current portfolio positions from TWS",
+      "tool": "get_positions.py",
+      "description": "Reads current positions from TWS",
       "read_only": true
     }
   },

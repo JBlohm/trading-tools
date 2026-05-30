@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-get_portfolio.py — Retrieve current portfolio positions from Interactive Brokers TWS.
+get_positions.py — Retrieve current positions from Interactive Brokers TWS.
 
 Returns positions as a JSON array to stdout.
 
 Usage:
-    python get_portfolio.py [--host HOST] [--port PORT] [--paper] [--live]
+    python get_positions.py [--host HOST] [--port PORT] [--paper] [--live]
 
 Connection ID: 1000 (see ../tools/connection_ids.json)
 """
@@ -43,7 +43,7 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def portfolio_item_to_dict(item: "PortfolioItem") -> dict:
+def position_to_dict(item: "PortfolioItem") -> dict:
     contract = item.contract
     return {
         "symbol": contract.symbol,
@@ -61,7 +61,7 @@ def portfolio_item_to_dict(item: "PortfolioItem") -> dict:
     }
 
 
-async def fetch_portfolio(host: str, port: int, client_id: int) -> list[dict]:
+async def fetch_positions(host: str, port: int, client_id: int) -> list[dict]:
     ib = IB()
     try:
         with contextlib.redirect_stderr(io.StringIO()):
@@ -76,21 +76,21 @@ async def fetch_portfolio(host: str, port: int, client_id: int) -> list[dict]:
 
     try:
         portfolio: list[PortfolioItem] = ib.portfolio()
-        return [portfolio_item_to_dict(item) for item in portfolio]
+        return [position_to_dict(item) for item in portfolio]
     finally:
         ib.disconnect()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fetch current portfolio positions from Interactive Brokers TWS.",
+        description="Fetch current positions from Interactive Brokers TWS.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python get_portfolio.py                     # paper trading (default)
-  python get_portfolio.py --live              # live trading account
-  python get_portfolio.py --host 10.0.0.1    # custom TWS host
-  python get_portfolio.py --port 4002        # custom port (IB Gateway)
+  python get_positions.py                     # paper trading (default)
+  python get_positions.py --live              # live trading account
+  python get_positions.py --host 10.0.0.1    # custom TWS host
+  python get_positions.py --port 4002        # custom port (IB Gateway)
         """,
     )
     parser.add_argument(
@@ -129,7 +129,7 @@ def main() -> None:
     args = parse_args()
 
     try:
-        positions = asyncio.run(fetch_portfolio(args.host, args.port, CLIENT_ID))
+        positions = asyncio.run(fetch_positions(args.host, args.port, CLIENT_ID))
     except ConnectionError as exc:
         print(
             json.dumps(

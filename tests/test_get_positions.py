@@ -1,4 +1,4 @@
-"""Tests for get_portfolio.py."""
+"""Tests for get_positions.py."""
 
 import asyncio
 import json
@@ -42,11 +42,11 @@ def _make_portfolio_item(**kwargs):
 
 
 # ---------------------------------------------------------------------------
-# Unit tests for portfolio_item_to_dict
+# Unit tests for position_to_dict
 # ---------------------------------------------------------------------------
 
 
-class TestPortfolioItemToDict:
+class TestPositionToDict:
     def setup_method(self):
         # Ensure the module can be imported even without ib_async installed
         import importlib
@@ -58,13 +58,13 @@ class TestPortfolioItemToDict:
         sys.modules.setdefault("ib_async", fake_ib_async)
 
         # Re-import to pick up the fake module if needed
-        if "tools.get_portfolio" in sys.modules:
-            del sys.modules["tools.get_portfolio"]
+        if "tools.get_positions" in sys.modules:
+            del sys.modules["tools.get_positions"]
 
         sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
-        from tools.get_portfolio import portfolio_item_to_dict
+        from tools.get_positions import position_to_dict
 
-        self.fn = portfolio_item_to_dict
+        self.fn = position_to_dict
 
     def test_basic_fields_present(self):
         item = _make_portfolio_item()
@@ -121,42 +121,42 @@ class TestArgParsing:
         fake_ib_async.PortfolioItem = object
         sys.modules.setdefault("ib_async", fake_ib_async)
 
-        if "tools.get_portfolio" in sys.modules:
-            del sys.modules["tools.get_portfolio"]
+        if "tools.get_positions" in sys.modules:
+            del sys.modules["tools.get_positions"]
 
         sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
-        import tools.get_portfolio as mod
+        import tools.get_positions as mod
 
         self.mod = mod
 
     def test_defaults_to_paper_port(self):
-        with patch("sys.argv", ["get_portfolio.py"]):
+        with patch("sys.argv", ["get_positions.py"]):
             args = self.mod.parse_args()
         assert args.port == self.mod.PORT_PAPER
         assert args.host == self.mod.DEFAULT_HOST
 
     def test_live_flag_sets_live_port(self):
-        with patch("sys.argv", ["get_portfolio.py", "--live"]):
+        with patch("sys.argv", ["get_positions.py", "--live"]):
             args = self.mod.parse_args()
         assert args.port == self.mod.PORT_LIVE
 
     def test_paper_flag_sets_paper_port(self):
-        with patch("sys.argv", ["get_portfolio.py", "--paper"]):
+        with patch("sys.argv", ["get_positions.py", "--paper"]):
             args = self.mod.parse_args()
         assert args.port == self.mod.PORT_PAPER
 
     def test_custom_host(self):
-        with patch("sys.argv", ["get_portfolio.py", "--host", "10.0.0.5"]):
+        with patch("sys.argv", ["get_positions.py", "--host", "10.0.0.5"]):
             args = self.mod.parse_args()
         assert args.host == "10.0.0.5"
 
     def test_custom_port(self):
-        with patch("sys.argv", ["get_portfolio.py", "--port", "4002"]):
+        with patch("sys.argv", ["get_positions.py", "--port", "4002"]):
             args = self.mod.parse_args()
         assert args.port == 4002
 
     def test_live_and_paper_are_mutually_exclusive(self):
-        with patch("sys.argv", ["get_portfolio.py", "--live", "--paper"]):
+        with patch("sys.argv", ["get_positions.py", "--live", "--paper"]):
             with pytest.raises(SystemExit):
                 self.mod.parse_args()
 
@@ -175,11 +175,11 @@ class TestMain:
         fake_ib_async.PortfolioItem = object
         sys.modules.setdefault("ib_async", fake_ib_async)
 
-        if "tools.get_portfolio" in sys.modules:
-            del sys.modules["tools.get_portfolio"]
+        if "tools.get_positions" in sys.modules:
+            del sys.modules["tools.get_positions"]
 
         sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
-        import tools.get_portfolio as mod
+        import tools.get_positions as mod
 
         self.mod = mod
 
@@ -190,8 +190,8 @@ class TestMain:
         async def raise_connection_error(host, port, client_id):
             raise ConnectionError("Cannot reach TWS at 127.0.0.1:9")
 
-        with patch("sys.argv", ["get_portfolio.py", "--host", "127.0.0.1", "--port", "9"]):
-            with patch.object(self.mod, "fetch_portfolio", raise_connection_error):
+        with patch("sys.argv", ["get_positions.py", "--host", "127.0.0.1", "--port", "9"]):
+            with patch.object(self.mod, "fetch_positions", raise_connection_error):
                 with pytest.raises(SystemExit) as exc_info:
                     self.mod.main()
 
@@ -206,11 +206,11 @@ class TestMain:
 
 
 # ---------------------------------------------------------------------------
-# Integration-style tests for fetch_portfolio (mocking IB)
+# Integration-style tests for fetch_positions (mocking IB)
 # ---------------------------------------------------------------------------
 
 
-class TestFetchPortfolio:
+class TestFetchPositions:
     def setup_method(self):
         import types
 
@@ -220,11 +220,11 @@ class TestFetchPortfolio:
         fake_ib_async.PortfolioItem = object
         sys.modules["ib_async"] = fake_ib_async
 
-        if "tools.get_portfolio" in sys.modules:
-            del sys.modules["tools.get_portfolio"]
+        if "tools.get_positions" in sys.modules:
+            del sys.modules["tools.get_positions"]
 
         sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
-        import tools.get_portfolio as mod
+        import tools.get_positions as mod
 
         self.mod = mod
 
@@ -238,27 +238,27 @@ class TestFetchPortfolio:
 
     def test_returns_empty_list_for_empty_portfolio(self):
         self._setup_mock_ib(portfolio_items=[])
-        result = asyncio.run(self.mod.fetch_portfolio("127.0.0.1", 7497, 1000))
+        result = asyncio.run(self.mod.fetch_positions("127.0.0.1", 7497, 1000))
         assert result == []
 
     def test_returns_correct_items(self):
         items = [_make_portfolio_item(), _make_portfolio_item(position=200.0)]
         mock_ib = self._setup_mock_ib(portfolio_items=items)
-        result = asyncio.run(self.mod.fetch_portfolio("127.0.0.1", 7497, 1000))
+        result = asyncio.run(self.mod.fetch_positions("127.0.0.1", 7497, 1000))
         assert len(result) == 2
         assert result[0]["symbol"] == "AAPL"
         assert result[1]["position"] == 200.0
 
     def test_disconnects_after_success(self):
         mock_ib = self._setup_mock_ib()
-        asyncio.run(self.mod.fetch_portfolio("127.0.0.1", 7497, 1000))
+        asyncio.run(self.mod.fetch_positions("127.0.0.1", 7497, 1000))
         mock_ib.disconnect.assert_called_once()
 
     def test_disconnects_after_portfolio_error(self):
         mock_ib = self._setup_mock_ib()
         mock_ib.portfolio.side_effect = RuntimeError("boom")
         with pytest.raises(RuntimeError):
-            asyncio.run(self.mod.fetch_portfolio("127.0.0.1", 7497, 1000))
+            asyncio.run(self.mod.fetch_positions("127.0.0.1", 7497, 1000))
         mock_ib.disconnect.assert_called_once()
 
     def test_raises_connection_error_on_timeout(self):
@@ -267,7 +267,7 @@ class TestFetchPortfolio:
 
         with patch.object(self.mod, "CONNECT_TIMEOUT", 0.001):
             with pytest.raises(ConnectionError, match="Timed out"):
-                asyncio.run(self.mod.fetch_portfolio("127.0.0.1", 7497, 1000))
+                asyncio.run(self.mod.fetch_positions("127.0.0.1", 7497, 1000))
 
     def test_raises_connection_error_on_refused(self):
         mock_ib = self._setup_mock_ib()
@@ -275,11 +275,11 @@ class TestFetchPortfolio:
             side_effect=ConnectionRefusedError("Connection refused")
         )
         with pytest.raises(ConnectionError, match="Cannot reach TWS"):
-            asyncio.run(self.mod.fetch_portfolio("127.0.0.1", 7497, 1000))
+            asyncio.run(self.mod.fetch_positions("127.0.0.1", 7497, 1000))
 
     def test_readonly_flag_passed(self):
         mock_ib = self._setup_mock_ib()
-        asyncio.run(self.mod.fetch_portfolio("127.0.0.1", 7497, 1000))
+        asyncio.run(self.mod.fetch_positions("127.0.0.1", 7497, 1000))
         mock_ib.connectAsync.assert_called_once_with(
             "127.0.0.1", 7497, clientId=1000, readonly=True
         )
@@ -301,7 +301,7 @@ class TestConnectionIdRegister:
         data = json.loads(register_path.read_text())
         assert "ids" in data
         assert "1000" in data["ids"]
-        assert data["ids"]["1000"]["tool"] == "get_portfolio.py"
+        assert data["ids"]["1000"]["tool"] == "get_positions.py"
         assert data["ids"]["1000"]["read_only"] is True
 
     def test_all_ids_are_1000_or_above(self):
