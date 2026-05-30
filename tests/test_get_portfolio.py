@@ -162,6 +162,50 @@ class TestArgParsing:
 
 
 # ---------------------------------------------------------------------------
+# Unit tests for CLI error output
+# ---------------------------------------------------------------------------
+
+
+class TestMain:
+    def setup_method(self):
+        import types
+
+        fake_ib_async = types.ModuleType("ib_async")
+        fake_ib_async.IB = MagicMock
+        fake_ib_async.PortfolioItem = object
+        sys.modules.setdefault("ib_async", fake_ib_async)
+
+        if "tools.get_portfolio" in sys.modules:
+            del sys.modules["tools.get_portfolio"]
+
+        sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
+        import tools.get_portfolio as mod
+
+        self.mod = mod
+
+    def test_utc_timestamp_is_zulu(self):
+        assert self.mod.utc_timestamp().endswith("Z")
+
+    def test_connection_error_prints_json_to_stderr(self, capsys):
+        async def raise_connection_error(host, port, client_id):
+            raise ConnectionError("Cannot reach TWS at 127.0.0.1:9")
+
+        with patch("sys.argv", ["get_portfolio.py", "--host", "127.0.0.1", "--port", "9"]):
+            with patch.object(self.mod, "fetch_portfolio", raise_connection_error):
+                with pytest.raises(SystemExit) as exc_info:
+                    self.mod.main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+        error = json.loads(captured.err)
+        assert error["status"] == "tws_unavailable"
+        assert error["hint"] == "The TWS API is temporarily not available. Please try again later."
+        assert error["timestamp"].endswith("Z")
+
+
+# ---------------------------------------------------------------------------
 # Integration-style tests for fetch_portfolio (mocking IB)
 # ---------------------------------------------------------------------------
 

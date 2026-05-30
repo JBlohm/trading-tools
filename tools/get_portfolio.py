@@ -12,9 +12,11 @@ Connection ID: 1000 (see ../tools/connection_ids.json)
 
 import argparse
 import asyncio
+import contextlib
+import io
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 try:
     from ib_async import IB, PortfolioItem
@@ -35,6 +37,10 @@ PORT_PAPER = 7497
 PORT_LIVE = 7496
 CLIENT_ID = 1000
 CONNECT_TIMEOUT = 10  # seconds
+
+
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def portfolio_item_to_dict(item: "PortfolioItem") -> dict:
@@ -58,10 +64,11 @@ def portfolio_item_to_dict(item: "PortfolioItem") -> dict:
 async def fetch_portfolio(host: str, port: int, client_id: int) -> list[dict]:
     ib = IB()
     try:
-        await asyncio.wait_for(
-            ib.connectAsync(host, port, clientId=client_id, readonly=True),
-            timeout=CONNECT_TIMEOUT,
-        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            await asyncio.wait_for(
+                ib.connectAsync(host, port, clientId=client_id, readonly=True),
+                timeout=CONNECT_TIMEOUT,
+            )
     except asyncio.TimeoutError:
         raise ConnectionError(f"Timed out connecting to TWS at {host}:{port}")
     except Exception as exc:
@@ -130,7 +137,7 @@ def main() -> None:
                     "error": str(exc),
                     "status": "tws_unavailable",
                     "hint": "The TWS API is temporarily not available. Please try again later.",
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "timestamp": utc_timestamp(),
                 }
             ),
             file=sys.stderr,
@@ -142,7 +149,7 @@ def main() -> None:
                 {
                     "error": f"Unexpected error: {exc}",
                     "status": "error",
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "timestamp": utc_timestamp(),
                 }
             ),
             file=sys.stderr,
