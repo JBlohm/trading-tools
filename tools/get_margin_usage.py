@@ -80,8 +80,7 @@ async def fetch_margin_usage(host: str, port: int, client_id: int, account: str 
         raise ConnectionError(f"Cannot reach TWS at {host}:{port} — {exc}") from exc
 
     try:
-        tag_list = ",".join(SUMMARY_TAGS)
-        summary_items = await ib.reqAccountSummaryAsync(group="All", tags=tag_list)
+        summary_items = await ib.accountSummaryAsync(account)
 
         # Build per-account dictionaries
         accounts: dict[str, dict] = {}
