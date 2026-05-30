@@ -17,9 +17,10 @@ import io
 import json
 import sys
 from datetime import datetime, timezone
+from typing import Any
 
 try:
-    from ib_async import IB, PortfolioItem
+    from ib_async import IB
 except ImportError:
     print(
         json.dumps(
@@ -43,7 +44,7 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def position_to_dict(item: "PortfolioItem") -> dict:
+def position_to_dict(item: Any) -> dict:
     contract = item.contract
     return {
         "symbol": contract.symbol,
@@ -75,7 +76,7 @@ async def fetch_positions(host: str, port: int, client_id: int) -> list[dict]:
         raise ConnectionError(f"Cannot reach TWS at {host}:{port} — {exc}") from exc
 
     try:
-        portfolio: list[PortfolioItem] = ib.portfolio()
+        portfolio: list[Any] = ib.portfolio()
         return [position_to_dict(item) for item in portfolio]
     finally:
         ib.disconnect()
