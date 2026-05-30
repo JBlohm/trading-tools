@@ -162,67 +162,69 @@ async def place_order(
         raise ConnectionError(f"Cannot reach TWS at {host}:{port} — {exc}") from exc
 
     try:
-        contract = _build_contract(args)
-        await ib.qualifyContractsAsync(contract)
+        # Redirect stdout → stderr so any IB API warning prints don't pollute our JSON stdout
+        with contextlib.redirect_stdout(sys.stderr):
+            contract = _build_contract(args)
+            await ib.qualifyContractsAsync(contract)
 
-        order = _build_order(args)
+            order = _build_order(args)
 
-        # --- Risk pre-check ---
-        nlv, excess_liquidity = await _get_nlv_and_excess(ib)
+            # --- Risk pre-check ---
+            nlv, excess_liquidity = await _get_nlv_and_excess(ib)
 
-        # Estimate notional: use limit price if available, else last market price
-        ref_price = args.limit_price or 0.0
-        if ref_price == 0.0:
-            ticker = ib.reqMktData(contract, snapshot=True)
-            try:
-                await asyncio.sleep(3)
-            except asyncio.CancelledError:
-                raise
-            ref_price = ticker.last or ticker.close or 0.0
-            ib.cancelMktData(contract)
+            # Estimate notional: use limit price if available, else last market price
+            ref_price = args.limit_price or 0.0
+            if ref_price == 0.0:
+                ticker = ib.reqMktData(contract, snapshot=True)
+                try:
+                    await asyncio.sleep(3)
+                except asyncio.CancelledError:
+                    raise
+                ref_price = ticker.last or ticker.close or 0.0
+                ib.cancelMktData(contract)
 
-        estimated_notional = ref_price * args.quantity
+            estimated_notional = ref_price * args.quantity
 
-        risk_check = {
-            "nlv": nlv,
-            "excess_liquidity": excess_liquidity,
-            "estimated_notional": estimated_notional,
-            "max_notional_limit": args.max_notional,
-            "max_pct_nlv": args.max_pct_nlv,
-            "passed": False,
-            "failures": [],
-        }
-
-        if estimated_notional > args.max_notional:
-            risk_check["failures"].append(
-                f"Estimated notional {estimated_notional:,.2f} exceeds limit {args.max_notional:,.2f}"
-            )
-
-        if nlv > 0 and estimated_notional > (nlv * args.max_pct_nlv / 100.0):
-            risk_check["failures"].append(
-                f"Estimated notional {estimated_notional:,.2f} exceeds {args.max_pct_nlv}% of NLV ({nlv:,.2f})"
-            )
-
-        if excess_liquidity <= 0:
-            risk_check["failures"].append(
-                f"Excess liquidity is {excess_liquidity:,.2f} — account may be margin-called"
-            )
-
-        if risk_check["failures"]:
-            risk_check["passed"] = False
-            return {
-                "timestamp": utc_timestamp(),
-                "status": "risk_check_failed",
-                "risk_check": risk_check,
+            risk_check = {
+                "nlv": nlv,
+                "excess_liquidity": excess_liquidity,
+                "estimated_notional": estimated_notional,
+                "max_notional_limit": args.max_notional,
+                "max_pct_nlv": args.max_pct_nlv,
+                "passed": False,
+                "failures": [],
             }
 
-        risk_check["passed"] = True
+            if estimated_notional > args.max_notional:
+                risk_check["failures"].append(
+                    f"Estimated notional {estimated_notional:,.2f} exceeds limit {args.max_notional:,.2f}"
+                )
 
-        trade = ib.placeOrder(contract, order)
-        # Give TWS a moment to acknowledge
-        await asyncio.sleep(0.5)
+            if nlv > 0 and estimated_notional > (nlv * args.max_pct_nlv / 100.0):
+                risk_check["failures"].append(
+                    f"Estimated notional {estimated_notional:,.2f} exceeds {args.max_pct_nlv}% of NLV ({nlv:,.2f})"
+                )
 
-        return _trade_to_dict(trade, risk_check)
+            if excess_liquidity <= 0:
+                risk_check["failures"].append(
+                    f"Excess liquidity is {excess_liquidity:,.2f} — account may be margin-called"
+                )
+
+            if risk_check["failures"]:
+                risk_check["passed"] = False
+                return {
+                    "timestamp": utc_timestamp(),
+                    "status": "risk_check_failed",
+                    "risk_check": risk_check,
+                }
+
+            risk_check["passed"] = True
+
+            trade = ib.placeOrder(contract, order)
+            # Give TWS a moment to acknowledge
+            await asyncio.sleep(0.5)
+
+            return _trade_to_dict(trade, risk_check)
     finally:
         ib.disconnect()
 

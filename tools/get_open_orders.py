@@ -2,8 +2,10 @@
 """
 get_open_orders.py — Retrieve open/pending orders from Interactive Brokers TWS.
 
-Returns all open orders (placed but not fully filled or cancelled) as a JSON
-array to stdout. Includes order details and current fill status.
+Returns all open orders across all API client connections as a JSON array to
+stdout. Uses reqAllOpenOrders so orders placed by any client ID (including
+place_order.py's client 1004) are visible. Includes order details and current
+fill status.
 
 Usage:
     python get_open_orders.py [--host HOST] [--port PORT] [--paper] [--live]
@@ -103,7 +105,7 @@ async def fetch_open_orders(host: str, port: int, client_id: int) -> list[dict]:
         raise ConnectionError(f"Cannot reach TWS at {host}:{port} — {exc}") from exc
 
     try:
-        trades = await ib.reqOpenOrdersAsync()
+        trades = await ib.reqAllOpenOrdersAsync()
         return [_trade_to_dict(t) for t in trades]
     finally:
         ib.disconnect()

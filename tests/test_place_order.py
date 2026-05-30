@@ -295,6 +295,22 @@ class TestRiskCheckLogic:
         result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         json.dumps(result)
 
+    def test_ib_warning_does_not_appear_on_stdout(self, capsys):
+        # Simulate ib_async printing a validation warning (e.g. code 399) to stdout
+        mock_ib = self._setup_mock_ib(nlv=500_000, excess=200_000)
+        trade = _make_trade()
+
+        def place_with_warning(contract, order):
+            print("IBKR API validation warning: Warning 399 — order held")
+            return trade
+
+        mock_ib.placeOrder.side_effect = place_with_warning
+
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert capsys.readouterr().out == ""
+
 
 class TestConnectionIdRegister:
     def test_place_order_registered_as_not_readonly(self):

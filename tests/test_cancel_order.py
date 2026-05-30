@@ -97,7 +97,7 @@ class TestCancelOrder:
     def _setup_mock_ib(self, open_trades=None):
         mock_instance = MagicMock()
         mock_instance.connectAsync = AsyncMock()
-        mock_instance.reqOpenOrdersAsync = AsyncMock(return_value=open_trades or [])
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=open_trades or [])
         mock_instance.cancelOrder = MagicMock()
         mock_instance.disconnect = MagicMock()
         self.mock_ib_class.return_value = mock_instance
@@ -158,6 +158,16 @@ class TestCancelOrder:
         mock_ib.connectAsync = AsyncMock(side_effect=ConnectionRefusedError("refused"))
         with pytest.raises(ConnectionError, match="Cannot reach TWS"):
             asyncio.run(self.mod.cancel_order("127.0.0.1", 7497, 1005, order_id=1))
+
+    def test_can_cancel_order_placed_by_different_client(self):
+        # order placed by client 1004 (place_order.py) must be visible and cancellable
+        trade = _make_trade(order=_make_order(orderId=99, clientId=1004))
+        mock_ib = self._setup_mock_ib(open_trades=[trade])
+        result = asyncio.run(self.mod.cancel_order("127.0.0.1", 7497, 1005, order_id=99))
+        assert result["status"] == "cancel_sent"
+        assert result["order_id"] == 99
+        mock_ib.cancelOrder.assert_called_once()
+        mock_ib.reqAllOpenOrdersAsync.assert_called_once()
 
     def test_result_has_timestamp(self):
         trade = _make_trade(order=_make_order(orderId=42))

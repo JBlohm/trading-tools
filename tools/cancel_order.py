@@ -2,8 +2,10 @@
 """
 cancel_order.py — Cancel an open order via Interactive Brokers TWS.
 
-Looks up the order by order ID among the currently open orders and sends a
-cancel request. Returns the final order status as JSON to stdout.
+Looks up the order by order ID across all API clients (reqAllOpenOrders) and
+sends a cancel request, so orders placed by any client ID (including
+place_order.py's client 1004) can be cancelled. Returns the final order status
+as JSON to stdout.
 
 Usage:
     python cancel_order.py --order-id ORDER_ID [--host HOST] [--port PORT] [--paper] [--live]
@@ -59,7 +61,7 @@ async def cancel_order(host: str, port: int, client_id: int, order_id: int) -> d
         raise ConnectionError(f"Cannot reach TWS at {host}:{port} — {exc}") from exc
 
     try:
-        open_trades = await ib.reqOpenOrdersAsync()
+        open_trades = await ib.reqAllOpenOrdersAsync()
 
         target_trade = None
         for trade in open_trades:

@@ -162,7 +162,7 @@ class TestFetchOpenOrders:
     def _setup_mock_ib(self, trades=None):
         mock_instance = MagicMock()
         mock_instance.connectAsync = AsyncMock()
-        mock_instance.reqOpenOrdersAsync = AsyncMock(return_value=trades or [])
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=trades or [])
         mock_instance.disconnect = MagicMock()
         self.mock_ib_class.return_value = mock_instance
         return mock_instance
@@ -186,6 +186,14 @@ class TestFetchOpenOrders:
         mock_ib.connectAsync.assert_called_once_with(
             "127.0.0.1", 7497, clientId=1003, readonly=True
         )
+
+    def test_uses_all_open_orders_not_client_scoped(self):
+        # Verifies reqAllOpenOrdersAsync is used so orders from other clients are visible
+        mock_ib = self._setup_mock_ib(trades=[_make_trade(order=_make_order(clientId=1004))])
+        result = asyncio.run(self.mod.fetch_open_orders("127.0.0.1", 7497, 1003))
+        assert len(result) == 1
+        assert result[0]["client_id"] == 1004
+        mock_ib.reqAllOpenOrdersAsync.assert_called_once()
 
     def test_disconnects_after_success(self):
         mock_ib = self._setup_mock_ib()
