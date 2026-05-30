@@ -3,9 +3,9 @@
 cancel_order.py — Cancel an open order via Interactive Brokers TWS.
 
 Looks up the order by order ID across all API clients (reqAllOpenOrders) and
-sends a cancel request, so orders placed by any client ID (including
-place_order.py's client 1004) can be cancelled. Returns the final order status
-as JSON to stdout.
+sends the cancel request from the order's owning client ID, so orders placed by
+any client ID (including place_order.py's client 1004) can be cancelled.
+Returns the final order status as JSON to stdout.
 
 Usage:
     python cancel_order.py --order-id ORDER_ID [--host HOST] [--port PORT] [--paper] [--live]
@@ -47,7 +47,7 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-async def cancel_order(host: str, port: int, client_id: int, order_id: int) -> dict:
+async def _connect(host: str, port: int, client_id: int) -> IB:
     ib = IB()
     try:
         with contextlib.redirect_stderr(io.StringIO()):
@@ -59,15 +59,23 @@ async def cancel_order(host: str, port: int, client_id: int, order_id: int) -> d
         raise ConnectionError(f"Timed out connecting to TWS at {host}:{port}")
     except Exception as exc:
         raise ConnectionError(f"Cannot reach TWS at {host}:{port} — {exc}") from exc
+    return ib
+
+
+async def _find_open_trade(ib: IB, order_id: int):
+    open_trades = await ib.reqAllOpenOrdersAsync()
+    for trade in open_trades:
+        if trade.order.orderId == order_id:
+            return trade
+    return None
+
+
+async def cancel_order(host: str, port: int, client_id: int, order_id: int) -> dict:
+    ib = await _connect(host, port, client_id)
 
     try:
-        open_trades = await ib.reqAllOpenOrdersAsync()
-
-        target_trade = None
-        for trade in open_trades:
-            if trade.order.orderId == order_id:
-                target_trade = trade
-                break
+        with contextlib.redirect_stdout(sys.stderr):
+            target_trade = await _find_open_trade(ib, order_id)
 
         if target_trade is None:
             return {
@@ -77,11 +85,27 @@ async def cancel_order(host: str, port: int, client_id: int, order_id: int) -> d
                 "message": f"No open order found with order_id {order_id}",
             }
 
+        order_client_id = getattr(target_trade.order, "clientId", client_id) or client_id
+        if order_client_id != client_id:
+            ib.disconnect()
+            ib = await _connect(host, port, order_client_id)
+            with contextlib.redirect_stdout(sys.stderr):
+                target_trade = await _find_open_trade(ib, order_id)
+
+            if target_trade is None:
+                return {
+                    "timestamp": utc_timestamp(),
+                    "status": "not_found",
+                    "order_id": order_id,
+                    "message": f"Order {order_id} was found on client_id {order_client_id} but is no longer open",
+                }
+
         contract = target_trade.contract
         order = target_trade.order
 
-        ib.cancelOrder(order)
-        await asyncio.sleep(CANCEL_WAIT)
+        with contextlib.redirect_stdout(sys.stderr):
+            ib.cancelOrder(order)
+            await asyncio.sleep(CANCEL_WAIT)
 
         final_status = target_trade.orderStatus.status
 
@@ -96,6 +120,7 @@ async def cancel_order(host: str, port: int, client_id: int, order_id: int) -> d
             "action": order.action,
             "order_type": order.orderType,
             "quantity": order.totalQuantity,
+            "cancel_client_id": order_client_id,
             "final_order_status": final_status,
         }
     finally:

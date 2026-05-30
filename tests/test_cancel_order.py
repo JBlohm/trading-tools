@@ -166,8 +166,15 @@ class TestCancelOrder:
         result = asyncio.run(self.mod.cancel_order("127.0.0.1", 7497, 1005, order_id=99))
         assert result["status"] == "cancel_sent"
         assert result["order_id"] == 99
+        assert result["cancel_client_id"] == 1004
         mock_ib.cancelOrder.assert_called_once()
-        mock_ib.reqAllOpenOrdersAsync.assert_called_once()
+        assert mock_ib.reqAllOpenOrdersAsync.call_count == 2
+        mock_ib.connectAsync.assert_any_call(
+            "127.0.0.1", 7497, clientId=1005, readonly=False
+        )
+        mock_ib.connectAsync.assert_any_call(
+            "127.0.0.1", 7497, clientId=1004, readonly=False
+        )
 
     def test_result_has_timestamp(self):
         trade = _make_trade(order=_make_order(orderId=42))

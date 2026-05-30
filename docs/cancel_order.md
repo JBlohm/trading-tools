@@ -1,6 +1,6 @@
 # cancel_order — Cancel Order Tool
 
-Cancels an open order by order ID via Interactive Brokers TWS. Looks up the order across all API clients (using `reqAllOpenOrders`) so orders placed by `place_order.py` or any other client can be cancelled. Prints the final order status as JSON.
+Cancels an open order by order ID via Interactive Brokers TWS. Looks up the order across all API clients (using `reqAllOpenOrders`), then sends the cancel request from the order's owning client ID so orders placed by `place_order.py` or any other client can be cancelled. Prints the final order status as JSON.
 
 ## Prerequisites
 
@@ -59,6 +59,7 @@ On success, prints JSON to **stdout** and exits with code `0`:
   "action": "BUY",
   "order_type": "LMT",
   "quantity": 1.0,
+  "cancel_client_id": 1004,
   "final_order_status": "Cancelled"
 }
 ```
@@ -85,6 +86,7 @@ Example not-found response (stderr):
 
 - **Connection ID:** 1005 (read-write; see `tools/connection_ids.json` for the full ID register)
 - Uses `reqAllOpenOrders` to find the order, so orders placed by **any** client ID are visible
+- If the order belongs to another client ID, reconnects with that owner client ID before sending `cancelOrder`
 - Each tool uses a unique connection ID so multiple tools can run in parallel without conflict
 
 ## TWS API Settings
