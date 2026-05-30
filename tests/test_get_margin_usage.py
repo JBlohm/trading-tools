@@ -69,7 +69,7 @@ class TestFetchMarginUsage:
     def _setup_mock_ib(self, summary_items=None):
         mock_instance = MagicMock()
         mock_instance.connectAsync = AsyncMock()
-        mock_instance.reqAccountSummaryAsync = AsyncMock(return_value=summary_items or [])
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary_items or [])
         mock_instance.disconnect = MagicMock()
         self.mock_ib_class.return_value = mock_instance
         return mock_instance
