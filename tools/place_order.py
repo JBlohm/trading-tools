@@ -122,7 +122,7 @@ async def _get_nlv_and_excess(ib: IB) -> tuple[float, float]:
     """Return (nlv, excess_liquidity) from account summary."""
     try:
         summary = await asyncio.wait_for(
-            ib.reqAccountSummaryAsync(group="All", tags="NetLiquidation,ExcessLiquidity"),
+            ib.accountSummaryAsync(),
             timeout=ACCOUNT_DATA_TIMEOUT,
         )
         nlv = 0.0
@@ -175,12 +175,9 @@ async def place_order(
         if ref_price == 0.0:
             ticker = ib.reqMktData(contract, snapshot=True)
             try:
-                await asyncio.wait_for(
-                    ib.waitOnUpdateAsync(timeout=3),
-                    timeout=4,
-                )
-            except asyncio.TimeoutError:
-                pass
+                await asyncio.sleep(3)
+            except asyncio.CancelledError:
+                raise
             ref_price = ticker.last or ticker.close or 0.0
             ib.cancelMktData(contract)
 
