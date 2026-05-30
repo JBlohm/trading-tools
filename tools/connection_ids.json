@@ -5,7 +5,32 @@
       "tool": "get_positions.py",
       "description": "Reads current positions from TWS",
       "read_only": true
+    },
+    "1001": {
+      "tool": "get_greeks.py",
+      "description": "Reads portfolio-level option Greeks (delta/gamma/theta/vega) from TWS",
+      "read_only": true
+    },
+    "1002": {
+      "tool": "get_margin_usage.py",
+      "description": "Reads account margin usage: NLV and excess liquidity from TWS",
+      "read_only": true
+    },
+    "1003": {
+      "tool": "get_open_orders.py",
+      "description": "Reads open/pending orders from TWS",
+      "read_only": true
+    },
+    "1004": {
+      "tool": "place_order.py",
+      "description": "Places a new order in TWS with a risk pre-check gate",
+      "read_only": false
+    },
+    "1005": {
+      "tool": "cancel_order.py",
+      "description": "Cancels an existing open order in TWS",
+      "read_only": false
     }
   },
-  "next_available": 1001
+  "next_available": 1006
 }
