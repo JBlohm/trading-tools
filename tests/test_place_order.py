@@ -220,13 +220,12 @@ class TestRiskCheckLogic:
             _make_account_value("DU", "NetLiquidation", str(nlv)),
             _make_account_value("DU", "ExcessLiquidity", str(excess)),
         ]
-        mock_instance.reqAccountSummaryAsync = AsyncMock(return_value=summary)
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
 
         mock_ticker = MagicMock()
         mock_ticker.last = last_price
         mock_ticker.close = last_price
         mock_instance.reqMktData.return_value = mock_ticker
-        mock_instance.waitOnUpdateAsync = AsyncMock()
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
 
