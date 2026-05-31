@@ -47,8 +47,29 @@ This folder contains detailed reference files for option strategies, based on th
 4. **Target 30–45 DTE** for new entries — optimal theta decay curve.
 5. **Define your risk** — prefer defined-risk spreads in smaller accounts; undefined risk (strangles/straddles) requires margin and careful position sizing.
 6. **Position sizing** — risk no more than 2–5% of account value per trade.
-7. **Roll for credit only** — never roll a position for a net debit; if a roll isn't available for a credit, take the loss.
+7. **Roll for credit only (short-premium default)** — for short-premium strategies (strangles, straddles, iron condors, verticals), never roll for a net debit; if a roll isn't available for a credit, take the loss. For debit strategies (debit spreads, calendars, PMCC/diagonals), closing and reopening or accepting a small debit on a roll may be valid if the thesis and risk still justify the position.
 8. **1 standard deviation (16-delta) rule** — place short strikes approximately 1σ OTM for a ~68% probability of success.
+
+---
+
+## Order-Entry and Monitoring Checklist
+
+Use this checklist at every trade entry and throughout the position lifecycle.
+
+### At Entry
+- [ ] **Multi-leg limit order** — always enter spreads, condors, and calendars as a single multi-leg order; never leg into a spread manually.
+- [ ] **Work near mid-price** — place the limit at the mid-point of the bid/ask; adjust in small increments if not filled within 30–60 seconds.
+- [ ] **Confirm buying power / max loss** — verify the trade's margin requirement and maximum defined loss before sending the order.
+- [ ] **Record trade details** — log the following at entry: underlying, strategy, strikes/expirations, credit or debit, IVR at entry, DTE at entry, profit target ($ or %), and stop/loss rule.
+
+### During the Trade
+- [ ] **21-DTE alert** — set a calendar reminder or platform alert for 21 DTE on every short-premium position; evaluate whether to close, roll, or hold through expiration.
+- [ ] **Profit-target alert** — set a GTC closing order or platform alert at the profit target (commonly 50% of credit for short premium, 25–50% of debit for debit strategies).
+- [ ] **Assign monitoring responsibility** — confirm who is watching each open position for breach of stops or rolling triggers (especially for undefined-risk trades).
+
+### At Adjustment / Roll
+- [ ] Confirm the roll meets the credit or debit rule for the strategy type (see Core Principle 7 above).
+- [ ] Re-record revised thesis, new strikes/expirations, and updated max loss after the adjustment.
 
 ---
 

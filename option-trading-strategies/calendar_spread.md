@@ -41,9 +41,10 @@ Two variants: **call calendar** and **put calendar**. Both work identically in m
 - **Strike selection:**
   - **ATM calendar:** Strike at current price for maximum time-decay advantage.
   - **OTM calendar:** Strike placed at a price target you expect the underlying to reach by front-month expiration.
-- **IV structure:** Calendars benefit from **contango** in the IV term structure (back month IV ≥ front month IV). If near-term IV is unusually elevated (e.g., earnings in the front month), the short option is richly priced — but earnings risk is then present in the front month.
-- **IV rank:** A low-to-moderate IVR environment is often preferable; you want cheap back-month premium relative to the front-month credit.
-- **Debit target:** The net debit should be no more than **25–33% of the back-month option's premium** — this ensures the front-month decay more than offsets the debit paid.
+- **IV environment:** A low-to-moderate IVR environment is generally preferred. You are long back-month vega and short front-month vega; the key setup question is whether the front-month short is rich enough relative to the back-month long to justify the net debit. A highly elevated front-month IV can make the short look attractive, but also signals near-term event risk that can rapidly move the underlying off your strike.
+- **Event risk:** Avoid entering a calendar when a catalyst (earnings, economic event) falls inside the front-month expiration unless the trade is specifically structured around that event (earnings calendar). Catalysts can cause a large underlying move that defeats the time-decay thesis.
+- **IV term structure:** Calendars can be entered in both normal (back ≥ front) and inverted (front > back) term structures. In an inverted structure the front-month short collects more credit, but the back-month long is cheaper precisely because long-dated IV is suppressed — assess whether the spread value justifies the debit, not whether one IV number exceeds the other.
+- **Debit target:** The net debit should be no more than **25–33% of the back-month option's premium** — this ensures the front-month decay can meaningfully offset the cost of the long.
 
 ---
 
