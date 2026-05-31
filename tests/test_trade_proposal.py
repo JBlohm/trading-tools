@@ -303,10 +303,20 @@ class TestRiskFieldRequirements:
         assert "MISSING_RISK_POINT" in exc_info.value.reason_codes
 
     def test_max_loss_is_required(self):
-        p = _equity_proposal(max_loss=0.0)
+        p = _equity_proposal(max_loss=None)
         with pytest.raises(ProposalError) as exc_info:
             validate_proposal(p)
-        assert "INVALID_MAX_LOSS" in exc_info.value.reason_codes
+        assert "MISSING_RISK_BUDGET" in exc_info.value.reason_codes
+
+    def test_max_risk_budget_can_satisfy_risk_budget_requirement(self):
+        p = _equity_proposal(max_loss=None, max_risk_budget=500.0)
+        validate_proposal(p)
+
+    def test_invalid_max_risk_budget_is_rejected(self):
+        p = _equity_proposal(max_loss=None, max_risk_budget=0.0)
+        with pytest.raises(ProposalError) as exc_info:
+            validate_proposal(p)
+        assert "INVALID_MAX_RISK_BUDGET" in exc_info.value.reason_codes
 
     def test_risk_point_not_silently_inferred(self):
         """Missing risk_point must always be a hard error, never inferred."""
@@ -478,6 +488,12 @@ class TestNormalizeOrderPayload:
         payload = normalize_order_payload(p)
         assert payload["target_price"] == pytest.approx(190.0)
         assert payload["trailing_stop"] == pytest.approx(2.5)
+
+    def test_max_risk_budget_included(self):
+        p = _equity_proposal(max_loss=None, max_risk_budget=500.0)
+        payload = normalize_order_payload(p)
+        assert payload["max_loss"] is None
+        assert payload["max_risk_budget"] == pytest.approx(500.0)
 
     def test_normalize_raises_on_invalid_proposal(self):
         p = _equity_proposal(order_type=OrderType.LMT, limit_price=None)

@@ -18,7 +18,7 @@ Typical flow
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
 
@@ -93,6 +93,7 @@ class TradeProposal:
     trade_type      SCALP | DAY | SWING — expected hold duration
     risk_point      Explicit invalidation / stop-loss price (never inferred)
     max_loss        Maximum dollar loss budget for this trade (must be > 0)
+    max_risk_budget Alternative maximum risk budget (must be > 0)
 
     Conditional
     -----------
@@ -118,7 +119,8 @@ class TradeProposal:
     rationale: str
     trade_type: TradeType
     risk_point: float
-    max_loss: float
+    max_loss: Optional[float] = None
+    max_risk_budget: Optional[float] = None
 
     # Conditional / optional
     venue: Optional[str] = None
@@ -170,7 +172,9 @@ REJECTION_CODES = {
     "MISSING_LIMIT_PRICE_FOR_STP_LMT": "limit_price is required for STP_LMT orders",
     "MISSING_STOP_PRICE_FOR_STP_LMT": "stop_price is required for STP_LMT orders",
     "MISSING_RISK_POINT": "risk_point (invalidation price) must be specified explicitly",
-    "INVALID_MAX_LOSS": "max_loss must be > 0",
+    "INVALID_MAX_LOSS": "max_loss must be > 0 when supplied",
+    "INVALID_MAX_RISK_BUDGET": "max_risk_budget must be > 0 when supplied",
+    "MISSING_RISK_BUDGET": "max_loss or max_risk_budget must be specified explicitly",
     "MISSING_STRATEGY": "strategy tag is required",
     "MISSING_RATIONALE": "rationale/context is required",
     "MISSING_OPTION_EXPIRY": "expiry (YYYYMMDD) is required for OPTION",
@@ -226,8 +230,12 @@ def validate_proposal(proposal: TradeProposal) -> None:
     # --- Risk fields (never inferred) ---
     if proposal.risk_point is None:
         errors.append("MISSING_RISK_POINT")
-    if proposal.max_loss is None or proposal.max_loss <= 0:
+    if proposal.max_loss is None and proposal.max_risk_budget is None:
+        errors.append("MISSING_RISK_BUDGET")
+    if proposal.max_loss is not None and proposal.max_loss <= 0:
         errors.append("INVALID_MAX_LOSS")
+    if proposal.max_risk_budget is not None and proposal.max_risk_budget <= 0:
+        errors.append("INVALID_MAX_RISK_BUDGET")
 
     # --- Strategy / context ---
     if not proposal.strategy or not proposal.strategy.strip():
@@ -297,6 +305,7 @@ def normalize_order_payload(proposal: TradeProposal) -> dict:
         "trade_type": proposal.trade_type.value,
         "risk_point": proposal.risk_point,
         "max_loss": proposal.max_loss,
+        "max_risk_budget": proposal.max_risk_budget,
         "target_price": proposal.target_price,
         "trailing_stop": proposal.trailing_stop,
         "position_effect": proposal.position_effect.value if proposal.position_effect else None,
