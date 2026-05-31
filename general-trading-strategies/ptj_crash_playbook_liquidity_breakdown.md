@@ -35,6 +35,29 @@ The setup is not just "market is down." It needs a deterioration cluster:
 - Prefer adding on lower highs after profitable movement, not on the first emotional down day.
 - If using options, prefer defined-risk put spreads when implied volatility is not already extreme.
 
+## Execution Trigger
+
+Avoid chasing the first headline break. The cleaner trigger is:
+
+1. Index breaks a widely watched support shelf or moving-average cluster.
+2. Bounce attempt fails below the broken level.
+3. Volatility, breadth, or credit confirms that liquidity is worsening rather than just pausing.
+
+If the market gaps below support, do not short the open print. Wait for either a failed VWAP reclaim, a failed retest from below, or use options with defined risk after spreads normalize.
+
+## Stop Placement
+
+- Price stop: close back above the failed-retest high or reclaim of the broken shelf.
+- Squeeze stop: intraday reversal that closes above VWAP and prior support with volatility falling.
+- Policy stop: emergency liquidity action, central-bank backstop, short-sale restriction, or other intervention that changes the payoff.
+
+## Trade Management
+
+- Cover into forced selling, not after the market has already bounced from panic lows.
+- Reduce faster than normal because crash shorts have negative convexity to policy headlines and short squeezes.
+- Trail stops above lower highs once the trade is profitable; never widen stops because volatility rose.
+- If using put spreads, predefine whether the desk will monetize delta on the way down or hold for the spread target.
+
 ## Exit / De-Risk Plan
 
 - Cover part into panic extensions; crashes create air pockets but rebounds are brutal.
@@ -56,6 +79,15 @@ The setup is not just "market is down." It needs a deterioration cluster:
 - Stop: Close above the retest high.
 - Add: Add only after a lower low and a lower high, with first unit stop reduced.
 - Exit: Cover one third into a 3R extension or if a policy rescue changes liquidity conditions.
+
+## Desk Example
+
+- Pre-trade: SPX loses its 200-day moving average, high-yield spreads widen, VIX term structure inverts, and leadership narrows.
+- Trigger: Short ES 0.33-0.5 risk unit only after a bounce fails below the broken 200-day area and closes weak.
+- Stop: Close above the failed-retest high or a confirmed policy/liquidity backstop.
+- First management point: Cover one third into a 2R-3R air pocket or if intraday downside volume climaxes.
+- Add: Add only on a lower high after a lower low; do not add to the first vertical selloff.
+- Exit: Flatten remaining tactical shorts if SPX reclaims the broken shelf on improving breadth or volatility compresses for two sessions.
 
 ## Failure Modes
 

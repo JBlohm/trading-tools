@@ -37,6 +37,28 @@ Look for a regime where several pieces line up:
 - Add: Add only after the market moves in favor and the stop can be trailed or risk is still inside budget.
 - No averaging down: Do not add to a losing position just because the thesis sounds good. Price must confirm.
 
+## Execution Trigger
+
+The clean desk trigger is a two-step sequence:
+
+1. Price closes outside the range or rejects the failed retest level during a liquid session.
+2. The next session does not immediately close back inside the range and at least one confirmation market agrees.
+
+For intraday execution, use a stop entry only when the breakout level, expected slippage, and first stop are already in the ticket. If the breakout occurs in the last minutes of a thin session, wait for the next liquid handoff unless the catalyst is time-sensitive.
+
+## Stop Placement
+
+- Initial stop: beyond the retest low for longs or retest high for shorts, with enough room for normal noise.
+- Time stop: if the trade has not moved at least 0.75R in favor within the expected catalyst window, cut size or flatten.
+- Event stop: reduce before data releases that can gap through the structure unless the position is already financed by open profit.
+
+## Trade Management
+
+- Move the first unit to breakeven only after the market prints a fresh continuation high/low, not immediately after entry.
+- Take partial profit into a 2R-3R extension when the move becomes one-sided and liquidity thins.
+- Trail the remainder behind the last higher low/lower high or a short moving average that fits the holding period.
+- Do not add after the third clean directional day unless there is a fresh consolidation; late adds usually pay the worst price.
+
 ## Exit / De-Risk Plan
 
 - Exit immediately if price closes back inside the range and the breakout fails.
@@ -58,6 +80,15 @@ Look for a regime where several pieces line up:
 - Stop: Close back below the breakout level or below the retest low.
 - Add: Add if breadth expands and price makes a higher high while stop can move to breakeven on the first unit.
 - Exit: Take partial profits into a 2.5R-3R move or ahead of CPI/FOMC if the event can gap through the stop.
+
+## Desk Example
+
+- Pre-trade: ES has a 6-week range high at 5,300, breadth is improving, 10-year real yields stop rising, and USD weakens.
+- Trigger: Buy 0.5 risk unit only if ES closes above 5,300 and the next liquid session holds 5,285-5,300 on a retest.
+- Stop: Initial stop below 5,275, the retest low. If CPI is within 24 hours, halve size or wait.
+- First management point: If ES trades to 5,365, stop moves to entry only after breadth remains positive into the close.
+- Add: Add 0.25-0.5 unit only after a higher low above 5,300 and a new high, with total open risk still within the original risk budget.
+- Exit: Sell one third around 2.5R, trail the balance below the latest daily higher low, and flatten if ES closes back below 5,300.
 
 ## Failure Modes
 
