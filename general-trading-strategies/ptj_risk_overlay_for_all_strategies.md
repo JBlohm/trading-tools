@@ -20,6 +20,21 @@ Before any trade from the strategy library is live, write down:
 8. Catalyst, time horizon, and exit/de-risk plan.
 9. Immediate action if wrong.
 
+## Desk Ticket Checklist
+
+Every executable idea should fit on one order ticket:
+
+- Direction and instrument.
+- Trigger price or condition.
+- Entry type: market, limit, stop, stop-limit, option structure, or staged probe.
+- Initial stop and maximum slippage allowed.
+- First target or partial-profit level.
+- Add level and add size, if any.
+- Kill switch: price, time, event, or liquidity condition that forces flat.
+- Correlated open positions that share the same risk factor.
+
+If any line is blank, the idea is not ready for live execution.
+
 ## Position Sizing Rule
 
 - Size from stop distance, not conviction.
@@ -27,11 +42,26 @@ Before any trade from the strategy library is live, write down:
 - Add only after confirmation and only if total risk remains inside budget.
 - Reduce when volatility rises and stop distance widens.
 
+## Order Entry Standards
+
+- Use limit orders for planned entries around retests when liquidity allows.
+- Use stop orders only for breakout participation where slippage has been modeled.
+- Use stop-limit orders carefully; they control price but can leave the desk unfilled in a fast market.
+- Do not send an add order unless the current stop, new blended stop, and total risk are already recalculated.
+- For options, check spread width, implied-volatility percentile, open interest, and exercise/assignment risk before entry.
+
 ## Stop / Invalidation Rule
 
 - Every trade needs a price or fact pattern that proves the trade wrong.
 - If the stop is hit, exit. Re-entry requires a fresh setup, not ego.
 - A macro thesis can stay intellectually valid while the trade is still wrong. Price and timing matter.
+
+## Stop Management Rule
+
+- Never widen the original stop after entry.
+- Trail only after the market confirms with a new swing in the trade direction.
+- Move to breakeven because the structure improved, not because the desk wants emotional comfort.
+- If volatility expands so much that the correct stop is now unaffordable, reduce size instead of moving the stop farther away.
 
 ## Portfolio Heat Rule
 
@@ -70,6 +100,16 @@ Cut or reduce when any of these occur:
 3. Correlation risk becomes larger than planned.
 4. Liquidity deteriorates.
 5. A better asymmetric use of capital appears.
+
+## Intraday Monitoring
+
+For live positions, monitor:
+
+- Price versus trigger, VWAP, prior session high/low, and invalidation level.
+- Liquidity: spread width, depth, volume pace, futures roll, borrow, and option market width.
+- Event calendar: central-bank speakers, auctions, data releases, earnings for index-heavy names, and policy headlines.
+- Factor overlap: dollar, duration, equity beta, credit, commodities, and volatility.
+- Realized loss versus planned loss; if the live loss exceeds the ticketed loss, flatten first and review later.
 
 ## Example: Turning A View Into A Controlled Bet
 

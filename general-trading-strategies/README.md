@@ -8,3 +8,4 @@ Research notes for discretionary trading setups. Each file should define context
 - [Crash Playbook / Liquidity Breakdown](ptj_crash_playbook_liquidity_breakdown.md)
 - [Rates / FX Policy Divergence Macro Trade](ptj_rates_fx_policy_divergence.md)
 - [Risk Overlay For All Strategies](ptj_risk_overlay_for_all_strategies.md)
+- [Trader Execution Layer](ptj_trader_execution_layer.md)

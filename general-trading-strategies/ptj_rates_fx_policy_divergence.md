@@ -35,6 +35,30 @@ The best context combines:
 - Use a smaller probe ahead of event risk only if the stop is defined and gap risk is acceptable.
 - Add when subsequent data confirms and the market makes a fresh trend high/low.
 
+## Execution Trigger
+
+The trigger should combine market pricing and spot/futures price:
+
+1. Rate differential, curve spread, or central-bank pricing breaks in the thesis direction.
+2. FX pair or bond future confirms with a range break or failed retest.
+3. The move survives the first liquid session after the relevant data or policy event.
+
+Avoid entering purely because a central-bank statement "sounds hawkish" or "sounds dovish." The trade becomes executable when pricing and the instrument confirm the same message.
+
+## Stop Placement
+
+- FX stop: beyond the failed-retest high/low or the prior swing that would put price back in the old range.
+- Rates stop: beyond the yield/futures pivot that would reverse the policy-pricing breakout.
+- Data stop: flatten or reduce if the next major data point narrows the policy spread enough to invalidate the divergence.
+- Calendar stop: if no follow-through appears before the next central-bank meeting, cut size rather than carrying stale event risk.
+
+## Trade Management
+
+- Split the trade into event risk and trend risk. Event risk is smaller and may be reduced immediately after the catalyst.
+- Add only when both price and rate differentials make new confirming extremes.
+- Take partial profit when market pricing reaches an extreme path and the next data release has more room to disappoint than help.
+- Keep FX, rates, equity index, and commodity exposures grouped; policy divergence trades often carry the same dollar or real-yield factor.
+
 ## Exit / De-Risk Plan
 
 - Exit if the central-bank path reprices against the trade.
@@ -56,6 +80,15 @@ The best context combines:
 - Stop: Close back above the failed-retest high or a data release that narrows the policy spread materially.
 - Add: Add only if the rate spread makes a new divergence high and EUR/USD confirms with a new low.
 - Exit: Cover partials ahead of FOMC/ECB if the event could reverse the pricing.
+
+## Desk Example
+
+- Pre-trade: U.S. payrolls and CPI are firm, Eurozone PMIs weaken, 2-year U.S.-Germany spread widens, and EUR/USD sits above a 1.0700 range floor.
+- Trigger: Short EUR/USD 0.5 risk unit only after the pair breaks 1.0700, retests from below, and front-end spreads keep widening.
+- Stop: Daily close back above the failed-retest high or a data release that narrows the 2-year spread materially.
+- First management point: Cover one third at 1.5R-2R if positioning becomes crowded before the next ECB/Fed event.
+- Add: Add only after EUR/USD makes a new low and the rate spread confirms with a new divergence high.
+- Exit: Flatten if the central-bank path converges, if the pair reclaims the range, or before a binary event where gap risk exceeds the planned stop.
 
 ## Failure Modes
 
