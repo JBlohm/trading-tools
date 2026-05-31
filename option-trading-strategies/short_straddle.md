@@ -37,7 +37,7 @@ Both in the **same expiration** at the **same strike price** (typically the clos
 
 - **25% profit target:** Close when the straddle decays to **25% of the original credit** (i.e., when the straddle can be bought back for 75% of what you received). Tastytrade uses 25% for straddles vs. 50% for strangles/condors because the ATM position accumulates credit faster relative to risk.
 - **Delta management:** The straddle becomes directional quickly when the underlying moves. Monitor net delta daily. If the position becomes significantly directional (e.g., delta > 30 in either direction), the tastylive approach is to **roll the untested (winning) side closer to ATM** — this collects additional credit and re-centres the position's delta. Do NOT sell additional options on the tested (losing) side, as that increases exposure to the side already under pressure.
-- **Rolling the tested leg:** If the underlying moves meaningfully in one direction, roll the **losing short option** (the one moving ITM) further OTM in the same expiration or out in time, collecting additional credit. The winning side decays and may be closed for a small debit.
+- **Rolling the tested leg (defensive, out-in-time only):** If the underlying breaks through the short strike, a defensive option is to roll the tested short option to a **later expiration**. This out-in-time roll can sometimes be executed for net credit or a small debit, extending the trade's duration and giving the position more time to recover. Rolling the tested option further OTM within the **same expiration** is normally a **debit** — you are buying back an option with intrinsic/near-ATM value and selling a cheaper OTM option — so it does not reliably collect credit and is not the preferred adjustment. The primary adjustment remains rolling the untested (winning) side toward ATM as described above.
 - **Inside 21 DTE:** Gamma accelerates sharply. Monitor daily. Close the position by 21 DTE unless the profit target has been met.
 - **Stop-loss:** Close the entire straddle if the loss reaches **2× the original credit**.
 
@@ -49,7 +49,7 @@ Both in the **same expiration** at the **same strike price** (typically the clos
 |----------|--------|
 | Straddle decays to 25% of original credit | Close both legs; take profit |
 | Underlying pins at strike at expiration | Maximum profit; close same day (pin risk) |
-| Underlying moves significantly from strike | Roll the tested leg further OTM/out in time for a credit |
+| Underlying moves significantly from strike | Roll untested (winning) side toward ATM to collect credit and re-centre delta; defensive tested-side roll out in time only if executable for acceptable credit and risk |
 | Stop-loss: loss = 2× original credit | Close the entire position |
 | Inside 21 DTE | Evaluate daily; close or roll to avoid gamma spike |
 

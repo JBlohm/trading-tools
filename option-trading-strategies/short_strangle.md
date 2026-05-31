@@ -38,9 +38,9 @@ Both in the **same expiration**. There are no long protective legs.
 
 - **50% profit target:** Close both legs when the total position has decayed to **50% of the original credit**.
 - **21 DTE rule:** Evaluate at 21 DTE; if not at target, consider closing or rolling to avoid accelerated gamma exposure.
-- **Untested-side management:** When one side (e.g., the call) moves toward the money, the opposite side (the put — "untested") has decayed. You can close the untested side for a small debit to **reduce net risk** while the threatened side is addressed separately.
-- **Rolling the tested side:** Roll the threatened short option **further OTM and/or out in time** for a net credit, increasing the probability of finishing OTM.
-- **Delta neutrality:** Monitor portfolio delta; if the position becomes significantly directional, sell a small amount of the opposing option to re-centre the tent.
+- **Untested-side management (primary adjustment):** When one side moves toward the money, the untested (winning) side has decayed substantially. The tastylive primary adjustment is to **roll the untested side in toward the current underlying price** — buy it back at a small debit and resell at a strike closer to ATM. This collects net credit, reduces the delta imbalance, and re-centres the strangle around the current price without adding risk to the side already under pressure.
+- **Rolling the tested side (defensive, out-in-time only):** Rolling the threatened short option further OTM in the **same expiration** is typically a **debit** — you are buying back a near- or at-the-money option and selling a cheaper OTM option. If rolling the tested side is warranted, roll it to a **later expiration** only when it can be done for net credit and acceptable added duration risk. Do not roll the tested side simply to move the strike; that adds risk without compensation.
+- **Delta neutrality:** Monitor portfolio delta; if the position becomes significantly directional, roll the untested side closer to ATM or add a small short position on the untested side to re-centre delta — do not add options on the side already under pressure.
 - **Stop-loss:** Close the entire strangle if the loss reaches **2× the original credit** to prevent catastrophic loss.
 
 ---
@@ -51,7 +51,7 @@ Both in the **same expiration**. There are no long protective legs.
 |----------|--------|
 | Position decays to 50% of credit | Close both legs; close the trade |
 | Both options expire OTM | Full credit kept |
-| Underlying moves toward one short strike | Roll that leg further OTM/out; consider closing untested side |
+| Underlying moves toward one short strike | Roll untested side in toward ATM for credit (primary); defensive tested-side roll out in time only for net credit and acceptable risk |
 | Stop-loss: loss = 2× original credit | Close entire strangle immediately |
 | Inside 21 DTE, not at target | Evaluate: close or roll out in time |
 
