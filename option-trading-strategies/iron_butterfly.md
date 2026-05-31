@@ -54,7 +54,7 @@ All four legs share the **same expiration date**. Legs 2 and 3 are at the **same
 | Position decays to 25–50% of credit | Close all four legs; take profit |
 | Underlying pins ATM at expiration | Maximum profit at expiration; close same day to avoid pin risk |
 | Underlying moves significantly from ATM | One wing is threatened; convert to condor (roll body out) or close for a loss |
-| Stop-loss: loss = 2× wing width | Close the entire position |
+| Stop-loss: loss approaches 50–75% of max defined loss (wing width − credit) | Close the entire position — risk is already defined, so a pre-set dollar stop relative to max loss is appropriate |
 | Inside 21 DTE | Accelerated gamma; evaluate daily and close if strike is breached |
 
 ---

@@ -88,7 +88,7 @@ Additionally, if implied volatility rises, the back-month option (which you are 
 |--------|---------|
 | Max loss | Net debit paid × 100 per contract |
 | Max profit | Not precisely calculable at entry (depends on IV at front expiration); typically realised near the strike at front expiry |
-| Breakeven | Approximately ± net debit from the strike at front-month expiration |
+| Breakeven | Not precisely calculable at entry — depends on back-month IV, remaining time value, and skew at front-month expiration; cannot be reduced to a simple ± formula |
 | Profit zone | Underlying near the strike at front-month expiration |
 | Vega | Positive (benefits from rising IV in back month) |
 | Theta | Initially positive net (front-month decay > back-month decay when near expiry) |

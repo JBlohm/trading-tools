@@ -48,7 +48,9 @@ A standard covered call requires purchasing 100 shares (e.g., $10,000 for a $100
   - Expiration: **30–45 DTE**.
   - Strike must be **higher than or equal to the long leg's strike** to avoid creating a vertical debit spread (a requirement for the PMCC to work correctly).
 
-- **Debit target:** The net debit to establish the PMCC should ideally be **less than the intrinsic value** of the long call (i.e., you are not overpaying for time value in the back month). A rule of thumb: the PMCC debit should be **no more than 75% of the spread width** (distance between strikes).
+- **Debit target / setup quality check (tastylive):** Two tests must both pass:
+  1. **Credit covers extrinsic value:** The near-term short call credit collected should be **≥ the extrinsic value (time value) of the long LEAPS call**. This ensures the short leg is paying for the time value you are long, making the position self-funding from the outset.
+  2. **75% of strike width rule:** The net debit paid should be **no more than 75% of the spread width** (distance between the two strikes). If debit > 75% of width, the trade is too expensive relative to its upside — pass on the setup.
 
 - **Break-even check:** Confirm that repeatedly selling front-month calls at the target credit can eventually recover the full debit paid — model out the expected number of monthly cycles.
 

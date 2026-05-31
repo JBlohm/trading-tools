@@ -32,7 +32,7 @@ The iron condor = short put vertical (legs 1–2) + short call vertical (legs 3�
 - **DTE:** 30–45 DTE — the peak of the theta decay curve.
 - **Short strikes:** Place short put and short call each at approximately **1 standard deviation OTM** (delta ~0.16–0.20 for each short leg). This gives ~68% statistical probability the underlying remains between strikes.
 - **Spread width:** 5–10 points per wing for index products; proportional for lower-priced stocks.
-- **Credit target:** Aim to collect **at least 1/3 of the total spread width** (sum of both wings). For two 5-point wings (10 total width), target ≥ $3.33 credit.
+- **Credit target:** Aim to collect **at least 1/3 of the width of one spread (one wing)**. For a 5-point wing, target ≥ $1.67 credit. This aligns with the max-loss basis: max loss is the wider single spread width minus the total credit, so the credit target is correctly framed against one wing, not the sum of both wings (only one side can be fully ITM at expiration).
 - **IV rank:** IVR ≥ 30% for meaningful premium. In very high IV environments (IVR > 50%), the condor may command more than 1/3 width and offer excellent risk/reward.
 - **Avoid earnings:** Do not hold an iron condor through an earnings report.
 

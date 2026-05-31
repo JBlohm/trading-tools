@@ -36,7 +36,7 @@ Both in the **same expiration** at the **same strike price** (typically the clos
 ## Position Management
 
 - **25% profit target:** Close when the straddle decays to **25% of the original credit** (i.e., when the straddle can be bought back for 75% of what you received). Tastytrade uses 25% for straddles vs. 50% for strangles/condors because the ATM position accumulates credit faster relative to risk.
-- **Delta management:** The straddle becomes directional quickly when the underlying moves. Monitor net delta daily. If the position becomes significantly directional (e.g., delta > 30 in either direction), consider selling an additional OTM option on the tested side to re-neutralise delta ("gamma scalping" / "delta hedging").
+- **Delta management:** The straddle becomes directional quickly when the underlying moves. Monitor net delta daily. If the position becomes significantly directional (e.g., delta > 30 in either direction), the tastylive approach is to **roll the untested (winning) side closer to ATM** — this collects additional credit and re-centres the position's delta. Do NOT sell additional options on the tested (losing) side, as that increases exposure to the side already under pressure.
 - **Rolling the tested leg:** If the underlying moves meaningfully in one direction, roll the **losing short option** (the one moving ITM) further OTM in the same expiration or out in time, collecting additional credit. The winning side decays and may be closed for a small debit.
 - **Inside 21 DTE:** Gamma accelerates sharply. Monitor daily. Close the position by 21 DTE unless the profit target has been met.
 - **Stop-loss:** Close the entire straddle if the loss reaches **2× the original credit**.
