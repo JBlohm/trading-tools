@@ -23,7 +23,7 @@
     },
     "1004": {
       "tool": "place_order.py",
-      "description": "Places a new order in TWS with a risk pre-check gate",
+      "description": "Places a new order in TWS with a structured pre-trade risk gate",
       "read_only": false
     },
     "1005": {
@@ -50,7 +50,37 @@
       "tool": "get_quote_snapshot.py",
       "description": "Pre-trade quote, session state, and liquidity snapshot from TWS",
       "read_only": true
+    },
+    "1010": {
+      "tool": "pretrade_risk_check.py",
+      "description": "Runs structured pre-trade risk gate: portfolio exposure, margin, stress checks, and limit enforcement",
+      "read_only": true
+    },
+    "1011": {
+      "tool": "get_exposure.py",
+      "description": "Reports current portfolio exposure by symbol and asset class",
+      "read_only": true
+    },
+    "1012": {
+      "tool": "get_pnl.py",
+      "description": "Reports current P&L (unrealized + realized) for the account and each position",
+      "read_only": true
+    },
+    "1013": {
+      "tool": "get_liquidity_metrics.py",
+      "description": "Fetches bid/ask spread, volume, and liquidity assessment for a symbol",
+      "read_only": true
+    },
+    "1014": {
+      "tool": "get_risk_limits.py",
+      "description": "Displays the configured pre-trade risk limits from risk_limits.json",
+      "read_only": true
+    },
+    "1015": {
+      "tool": "run_pretrade_stress.py",
+      "description": "Runs equity/vol/rate/FX stress scenarios against a proposed order and portfolio",
+      "read_only": true
     }
   },
-  "next_available": 1010
+  "next_available": 1016
 }

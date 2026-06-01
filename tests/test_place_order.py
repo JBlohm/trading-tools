@@ -143,11 +143,34 @@ def _make_args(**kwargs):
         "order_type": "MKT",
         "limit_price": None,
         "tif": "DAY",
-        "max_notional": 100_000.0,
-        "max_pct_nlv": 10.0,
+        "simulation": False,
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
+
+
+def _pass_risk_result():
+    return {
+        "verdict": "pass",
+        "audit_id": "pretrade-20260101T000000Z-abcdef01",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "failures": [],
+        "warnings": [],
+        "risk_checks": [],
+        "stress_results": {},
+        "limit_utilization": {},
+        "account": {"nlv": 500_000, "excess_liquidity": 200_000},
+        "projected_position": {},
+        "margin_impact": {},
+        "order": {},
+    }
+
+
+def _fail_risk_result(reason_code="ERR_NOTIONAL_LIMIT", message="Notional exceeds limit"):
+    r = _pass_risk_result()
+    r["verdict"] = "fail"
+    r["failures"] = [{"reason_code": reason_code, "message": message, "check": "notional_limit"}]
+    return r
 
 
 class TestBuildOrder:
@@ -188,8 +211,7 @@ class TestArgParsing:
                                 "--order-type", "MKT"]):
             args = self.mod.parse_args()
         assert args.port == self.mod.PORT_PAPER
-        assert args.max_notional == self.mod.DEFAULT_MAX_NOTIONAL
-        assert args.max_pct_nlv == self.mod.DEFAULT_MAX_PCT_NLV
+        assert args.simulation is False
 
     def test_live_flag(self):
         with patch("sys.argv", ["place_order.py", "--symbol", "SPY",
@@ -205,83 +227,84 @@ class TestArgParsing:
                 self.mod.parse_args()
 
 
-class TestRiskCheckLogic:
+class TestRiskGateIntegration:
+    """Tests verifying that place_order correctly delegates to and respects the risk gate."""
+
     def setup_method(self):
         self.mock_ib_class = MagicMock()
         self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
 
-    def _setup_mock_ib(self, nlv=500_000.0, excess=200_000.0, last_price=0.0):
+    def _setup_mock_ib(self):
         mock_instance = MagicMock()
         mock_instance.connectAsync = AsyncMock()
         mock_instance.qualifyContractsAsync = AsyncMock()
         mock_instance.placeOrder = MagicMock(return_value=_make_trade())
-
-        summary = [
-            _make_account_value("DU", "NetLiquidation", str(nlv)),
-            _make_account_value("DU", "ExcessLiquidity", str(excess)),
-        ]
-        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
-
-        mock_ticker = MagicMock()
-        mock_ticker.last = last_price
-        mock_ticker.close = last_price
-        mock_ticker.halted = 0
-        mock_ticker.time = None
-        mock_instance.reqMktData.return_value = mock_ticker
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=[
+            _make_account_value("DU", "NetLiquidation", "500000"),
+            _make_account_value("DU", "ExcessLiquidity", "200000"),
+        ])
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
+        ticker = MagicMock()
+        ticker.bid = 49.95
+        ticker.ask = 50.05
+        ticker.last = 50.0
+        ticker.close = 49.9
+        ticker.halted = 0
+        ticker.time = None
+        ticker.modelGreeks = None
+        ticker.lastGreeks = None
+        mock_instance.reqMktData.return_value = ticker
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
-
+        mock_instance.portfolio.return_value = []
         self.mock_ib_class.return_value = mock_instance
         return mock_instance
 
-    def test_passes_when_within_limits(self):
-        self._setup_mock_ib(nlv=500_000, excess=200_000)
-        args = _make_args(quantity=10.0, limit_price=100.0, order_type="LMT",
-                          max_notional=100_000, max_pct_nlv=10.0)
-        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
-        assert result.get("status") != "risk_check_failed"
-        assert result["risk_check"]["passed"] is True
-
-    def test_fails_when_notional_exceeds_max(self):
-        self._setup_mock_ib(nlv=500_000, excess=200_000)
-        args = _make_args(quantity=1000.0, limit_price=200.0, order_type="LMT",
-                          max_notional=100_000, max_pct_nlv=10.0)
-        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
-        assert result["status"] == "risk_check_failed"
-        assert result["risk_check"]["passed"] is False
-        assert any("notional" in f.lower() for f in result["risk_check"]["failures"])
-
-    def test_fails_when_exceeds_pct_nlv(self):
-        self._setup_mock_ib(nlv=50_000, excess=20_000)
-        # notional = 10 * 600 = 6000 which is > 10% of 50000=5000
-        args = _make_args(quantity=10.0, limit_price=600.0, order_type="LMT",
-                          max_notional=1_000_000, max_pct_nlv=10.0)
-        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
-        assert result["status"] == "risk_check_failed"
-        assert any("NLV" in f or "nlv" in f.lower() for f in result["risk_check"]["failures"])
-
-    def test_fails_when_no_excess_liquidity(self):
-        self._setup_mock_ib(nlv=500_000, excess=-1_000)
-        args = _make_args(quantity=1.0, limit_price=10.0, order_type="LMT",
-                          max_notional=100_000, max_pct_nlv=10.0)
-        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
-        assert result["status"] == "risk_check_failed"
-        assert any("margin" in f.lower() or "excess" in f.lower()
-                   for f in result["risk_check"]["failures"])
-
-    def test_places_order_when_check_passes(self):
-        mock_ib = self._setup_mock_ib(nlv=500_000, excess=200_000)
-        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
-                          max_notional=100_000, max_pct_nlv=10.0)
-        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+    def test_places_order_when_risk_gate_passes(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT")
+        with patch("tools.place_order._run_risk_check", new=AsyncMock(return_value=_pass_risk_result())), \
+             patch("tools.place_order._load_limits", return_value={}):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         mock_ib.placeOrder.assert_called_once()
+        assert result.get("status") != "risk_check_failed"
+        assert "risk_check" in result
 
-    def test_does_not_place_order_when_check_fails(self):
-        mock_ib = self._setup_mock_ib(nlv=500_000, excess=200_000)
-        args = _make_args(quantity=10_000.0, limit_price=200.0, order_type="LMT",
-                          max_notional=100_000, max_pct_nlv=10.0)
-        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+    def test_rejects_order_when_risk_gate_fails(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1000.0, limit_price=200.0, order_type="LMT")
+        with patch("tools.place_order._run_risk_check",
+                   new=AsyncMock(return_value=_fail_risk_result())), \
+             patch("tools.place_order._load_limits", return_value={}):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         mock_ib.placeOrder.assert_not_called()
+        assert result["status"] == "risk_check_failed"
+        assert result["verdict"] == "fail"
+        assert result["failures"][0]["reason_code"] == "ERR_NOTIONAL_LIMIT"
+
+    def test_simulation_mode_bypasses_failed_risk_gate(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1000.0, limit_price=200.0, order_type="LMT", simulation=True)
+        with patch("tools.place_order._run_risk_check",
+                   new=AsyncMock(return_value=_fail_risk_result())), \
+             patch("tools.place_order._load_limits", return_value={}):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args,
+                                                       simulation=True))
+        mock_ib.placeOrder.assert_called_once()
+        assert result.get("status") != "risk_check_failed"
+
+    def test_rejection_includes_machine_readable_reason_codes(self):
+        self._setup_mock_ib()
+        args = _make_args()
+        with patch("tools.place_order._run_risk_check",
+                   new=AsyncMock(return_value=_fail_risk_result(
+                       reason_code="ERR_CONCENTRATION_SINGLE_NAME",
+                       message="Projected position exceeds single-name limit"))), \
+             patch("tools.place_order._load_limits", return_value={}):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["status"] == "risk_check_failed"
+        assert result["failures"][0]["reason_code"] == "ERR_CONCENTRATION_SINGLE_NAME"
+        assert "single-name" in result["failures"][0]["message"]
 
     def test_raises_connection_error_on_timeout(self):
         mock_ib = self._setup_mock_ib()
@@ -291,15 +314,15 @@ class TestRiskCheckLogic:
             asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
 
     def test_result_json_serialisable(self):
-        self._setup_mock_ib(nlv=500_000, excess=200_000)
-        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
-                          max_notional=100_000, max_pct_nlv=10.0)
-        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT")
+        with patch("tools.place_order._run_risk_check", new=AsyncMock(return_value=_pass_risk_result())), \
+             patch("tools.place_order._load_limits", return_value={}):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         json.dumps(result)
 
     def test_ib_warning_does_not_appear_on_stdout(self, capsys):
-        # Simulate ib_async printing a validation warning (e.g. code 399) to stdout
-        mock_ib = self._setup_mock_ib(nlv=500_000, excess=200_000)
+        mock_ib = self._setup_mock_ib()
         trade = _make_trade()
 
         def place_with_warning(contract, order):
@@ -308,9 +331,10 @@ class TestRiskCheckLogic:
 
         mock_ib.placeOrder.side_effect = place_with_warning
 
-        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
-                          max_notional=100_000, max_pct_nlv=10.0)
-        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT")
+        with patch("tools.place_order._run_risk_check", new=AsyncMock(return_value=_pass_risk_result())), \
+             patch("tools.place_order._load_limits", return_value={}):
+            asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         assert capsys.readouterr().out == ""
 
 
@@ -325,13 +349,23 @@ class TestRiskCheckLogicPortfolioCompat:
         mock_instance = MagicMock()
         mock_instance.connectAsync = AsyncMock()
         mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
         mock_instance.placeOrder = MagicMock(return_value=_make_trade())
         summary = [
             _make_account_value("DU", "NetLiquidation", str(nlv)),
             _make_account_value("DU", "ExcessLiquidity", str(excess)),
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
-        mock_instance.reqMktData.return_value = MagicMock(last=0.0, close=0.0, halted=0, time=None)
+        ticker = MagicMock()
+        ticker.bid = None
+        ticker.ask = None
+        ticker.last = 0.0
+        ticker.close = 0.0
+        ticker.halted = 0
+        ticker.time = None
+        ticker.modelGreeks = None
+        ticker.lastGreeks = None
+        mock_instance.reqMktData.return_value = ticker
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
         mock_instance.portfolio.return_value = []
@@ -386,7 +420,17 @@ class TestPostExecutionConfirmation:
             _make_account_value("DU", "MaintMarginReq", "8000"),
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
-        mock_instance.reqMktData.return_value = MagicMock(last=0.0, close=0.0, halted=0, time=None)
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
+        ticker = MagicMock()
+        ticker.bid = None
+        ticker.ask = None
+        ticker.last = 0.0
+        ticker.close = 0.0
+        ticker.halted = 0
+        ticker.time = None
+        ticker.modelGreeks = None
+        ticker.lastGreeks = None
+        mock_instance.reqMktData.return_value = ticker
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
         mock_instance.portfolio.return_value = portfolio_items if portfolio_items is not None else []
@@ -531,10 +575,14 @@ class TestPostExecutionConfirmation:
 
     def test_position_snapshot_available_false_on_error(self):
         mock_ib = self._setup_mock_ib()
-        mock_ib.portfolio.side_effect = RuntimeError("portfolio unavailable")
         args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
                           max_notional=100_000, max_pct_nlv=10.0)
-        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        # Patch _run_risk_check to pass so execution reaches _fetch_position_snapshot;
+        # then set portfolio.side_effect so _fetch_position_snapshot gets the error.
+        with patch("tools.place_order._run_risk_check", new=AsyncMock(return_value=_pass_risk_result())), \
+             patch("tools.place_order._load_limits", return_value={}):
+            mock_ib.portfolio.side_effect = RuntimeError("portfolio unavailable")
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         assert result["position_snapshot"]["available"] is False
 
     def test_margin_snapshot_returned(self):
@@ -585,12 +633,14 @@ class TestPreTradeSnapshotIntegration:
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
         t_kwargs = {"last": 100.0, "close": 99.0, "bid": 99.95,
-                    "ask": 100.05, "halted": 0, "time": None}
+                    "ask": 100.05, "halted": 0, "time": None,
+                    "modelGreeks": None, "lastGreeks": None}
         if ticker_kwargs:
             t_kwargs.update(ticker_kwargs)
-        mock_instance.reqMktData.return_value = MagicMock(**t_kwargs)
+        mock_instance.reqMktData.return_value = SimpleNamespace(**t_kwargs)
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
         mock_instance.portfolio.return_value = []
         self.mock_ib_class.return_value = mock_instance
         return mock_instance
