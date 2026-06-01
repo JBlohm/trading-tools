@@ -245,7 +245,7 @@ class TestBucketedGreeks:
 
     def test_empty_positions_returns_empty_buckets(self):
         result = self.mod._build_bucketed_greeks([], {})
-        assert result == {"by_underlying": {}, "by_expiry": {}}
+        assert result == {"by_underlying": {}, "by_expiry": {}, "by_strategy": {}}
 
     def test_single_option_bucketed_by_symbol_and_expiry(self):
         pos = {
@@ -318,6 +318,25 @@ class TestBucketedGreeks:
         assert "no_expiry" in result["by_expiry"]
         assert result["by_expiry"]["no_expiry"]["delta"] == pytest.approx(100.0)
 
+    def test_positions_with_strategy_bucketed_separately(self):
+        positions = [
+            {"symbol": "SPY", "expiry": "20251220", "strike": 500.0, "right": "C", "strategy": "income"},
+            {"symbol": "SPY", "expiry": "20251220", "strike": 510.0, "right": "P", "strategy": "hedge"},
+        ]
+        scaled_map = {
+            ("SPY", "20251220", 500.0, "C"): {"delta": 0.5, "gamma": 0.01, "theta": -0.05, "vega": 0.2, "iv": None},
+            ("SPY", "20251220", 510.0, "P"): {"delta": -0.4, "gamma": 0.01, "theta": -0.05, "vega": 0.15, "iv": None},
+        }
+        result = self.mod._build_bucketed_greeks(positions, scaled_map)
+        assert result["by_strategy"]["income"]["delta"] == pytest.approx(0.5)
+        assert result["by_strategy"]["hedge"]["delta"] == pytest.approx(-0.4)
+
+    def test_position_without_strategy_uses_unassigned_bucket(self):
+        pos = {"symbol": "AAPL", "expiry": None, "strike": None, "right": None}
+        scaled = {"delta": 100.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": None}
+        result = self.mod._build_bucketed_greeks([pos], {("AAPL", None, None, None): scaled})
+        assert result["by_strategy"]["unassigned"]["delta"] == pytest.approx(100.0)
+
     def test_fetch_greeks_result_includes_bucketed_greeks_key(self):
         mock_ib_class = MagicMock()
         mod, _ = _inject_fake_ib_async(mock_ib_class)
@@ -330,6 +349,7 @@ class TestBucketedGreeks:
         assert "bucketed_greeks" in result
         assert "by_underlying" in result["bucketed_greeks"]
         assert "by_expiry" in result["bucketed_greeks"]
+        assert "by_strategy" in result["bucketed_greeks"]
 
     def test_fetch_greeks_populates_bucketed_greeks_for_options(self):
         mock_ib_class = MagicMock()

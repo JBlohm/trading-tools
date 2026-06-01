@@ -6,7 +6,7 @@ Iterates over all option positions in the portfolio, requests model Greeks for
 each, and returns aggregate portfolio delta/gamma/theta/vega as JSON to stdout.
 Non-option positions are included in the output with zero Greeks.
 
-Also returns bucketed Greeks grouped by underlying symbol and by expiry date,
+Also returns bucketed Greeks grouped by underlying symbol, expiry date, and strategy,
 giving a breakdown of where risk is concentrated.
 
 Usage:
@@ -81,10 +81,20 @@ def _add_to_bucket(bucket: dict, scaled: dict) -> None:
     bucket["position_count"] += 1
 
 
+def _strategy_key(pos: dict) -> str:
+    return (
+        pos.get("strategy")
+        or pos.get("tag")
+        or pos.get("model_code")
+        or "unassigned"
+    )
+
+
 def _build_bucketed_greeks(positions_out: list, scaled_map: dict) -> dict:
-    """Return greeks bucketed by underlying symbol and by expiry."""
+    """Return greeks bucketed by underlying symbol, expiry, and strategy."""
     by_underlying: dict = {}
     by_expiry: dict = {}
+    by_strategy: dict = {}
 
     for pos in positions_out:
         key = (pos["symbol"], pos["expiry"], pos["strike"], pos["right"])
@@ -103,7 +113,16 @@ def _build_bucketed_greeks(positions_out: list, scaled_map: dict) -> dict:
             by_expiry[expiry] = _empty_bucket()
         _add_to_bucket(by_expiry[expiry], scaled)
 
-    return {"by_underlying": by_underlying, "by_expiry": by_expiry}
+        strategy = _strategy_key(pos)
+        if strategy not in by_strategy:
+            by_strategy[strategy] = _empty_bucket()
+        _add_to_bucket(by_strategy[strategy], scaled)
+
+    return {
+        "by_underlying": by_underlying,
+        "by_expiry": by_expiry,
+        "by_strategy": by_strategy,
+    }
 
 
 async def fetch_greeks(host: str, port: int, client_id: int) -> dict:
@@ -161,6 +180,13 @@ async def fetch_greeks(host: str, port: int, client_id: int) -> dict:
                 bucket_key = (contract.symbol, expiry, strike, right)
                 scaled_map[bucket_key] = scaled
 
+            model_code = getattr(item, "modelCode", None) or getattr(item, "model_code", None)
+            strategy = (
+                getattr(item, "strategy", None)
+                or getattr(item, "tag", None)
+                or model_code
+            )
+
             positions_out.append(
                 {
                     "symbol": contract.symbol,
@@ -171,6 +197,8 @@ async def fetch_greeks(host: str, port: int, client_id: int) -> dict:
                     "currency": contract.currency,
                     "position": item.position,
                     "greeks": position_greeks,
+                    "strategy": strategy,
+                    "model_code": model_code,
                     "account": item.account,
                 }
             )
