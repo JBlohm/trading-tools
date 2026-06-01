@@ -256,7 +256,7 @@ def _build_snapshot(ticker, args: argparse.Namespace, sec_type: str, data_type: 
         if all(options_out.get(k) is None for k in ("delta", "gamma", "theta", "vega", "iv")):
             warnings.append({"code": "NO_OPTION_GREEKS", "message": "Option Greeks unavailable"})
         if options_out.get("open_interest") is None:
-            warnings.append({"code": "NO_OPEN_INTEREST", "message": "Open interest data unavailable"})
+            warnings.append({"code": "NO_OPEN_INTEREST", "message": "Open interest unavailable"})
 
     # Hard rejection — first match wins
     rejected = False
@@ -370,12 +370,11 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
                 # Explicit delayed mode: skip live attempt
                 ticker = await _stream_and_cancel(3, MARKET_DATA_TIMEOUT)
             else:
-                # Try live data first; fall back to delayed if all fields are null
+                # Try live data first; fall back to delayed if bid/ask are unusable.
                 half = MARKET_DATA_TIMEOUT / 2
                 ticker = await _stream_and_cancel(1, half)
                 if (_safe_float(ticker.bid) is None
-                        and _safe_float(ticker.ask) is None
-                        and _safe_float(ticker.last) is None):
+                        or _safe_float(ticker.ask) is None):
                     ticker = await _stream_and_cancel(3, half)
 
             return _build_snapshot(ticker, args, args.sec_type.upper(), data_type_ref[0])
