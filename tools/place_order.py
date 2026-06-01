@@ -21,9 +21,10 @@ import asyncio
 import contextlib
 import io
 import json
+import math
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 try:
     from ib_async import IB, Contract, LimitOrder, MarketOrder, Stock, Option, Future
@@ -49,12 +50,164 @@ DEFAULT_MAX_NOTIONAL = 100_000.0
 DEFAULT_MAX_PCT_NLV = 10.0
 IB_UNSET_PRICE = 1.7976931348623157e308
 
+DEFAULT_STALE_THRESHOLD = 60   # seconds
+SNAPSHOT_TIMEOUT = 3           # seconds to wait for market data snapshot
+_HALT_HALTED = 1
+_HALT_END_PENDING = 2
+
 _REJECTED_STATUSES = frozenset({"Inactive", "ApiCancelled", "ApiRejected"})
 _MARGIN_TAGS = frozenset({"NetLiquidation", "ExcessLiquidity", "BuyingPower", "InitMarginReq", "MaintMarginReq"})
 
 
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _safe_float(val) -> "float | None":
+    if val is None:
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f) or f == IB_UNSET_PRICE:
+        return None
+    return f
+
+
+def _detect_et_session_state() -> str:
+    """Return session bucket (premarket/regular/after_hours/closed), DST-aware."""
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+    except ImportError:
+        now_utc = datetime.now(timezone.utc)
+        m, d = now_utc.month, now_utc.day
+        is_dst = (3 < m < 11) or (m == 3 and d >= 8) or (m == 11 and d < 7)
+        now_et = now_utc + timedelta(hours=-4 if is_dst else -5)
+    if now_et.weekday() >= 5:
+        return "closed"
+    hour = now_et.hour + now_et.minute / 60.0
+    if 4.0 <= hour < 9.5:
+        return "premarket"
+    if 9.5 <= hour < 16.0:
+        return "regular"
+    if 16.0 <= hour < 20.0:
+        return "after_hours"
+    return "closed"
+
+
+async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
+                                    quantity, stale_threshold: float) -> dict:
+    """Fetch a market data snapshot for the pre-trade gate and audit record."""
+    now_utc = datetime.now(timezone.utc)
+    ticker = ib.reqMktData(contract, genericTickList="100,101,106,236",
+                           snapshot=True, regulatorySnapshot=False)
+    try:
+        await asyncio.sleep(SNAPSHOT_TIMEOUT)
+    except asyncio.CancelledError:
+        raise
+    ib.cancelMktData(contract)
+
+    bid = _safe_float(ticker.bid)
+    ask = _safe_float(ticker.ask)
+    last = _safe_float(ticker.last)
+    close = _safe_float(getattr(ticker, "close", None))
+    volume = _safe_float(getattr(ticker, "volume", None))
+    adv = _safe_float(getattr(ticker, "avVolume", None))
+
+    spread = spread_pct = None
+    if bid is not None and ask is not None and bid > 0:
+        spread = round(ask - bid, 6)
+        mid = (bid + ask) / 2.0
+        if mid > 0:
+            spread_pct = round((spread / mid) * 100.0, 4)
+
+    quote_time = None
+    age_seconds = None
+    is_stale = False
+    raw_time = getattr(ticker, "time", None)
+    if raw_time is not None and isinstance(raw_time, datetime):
+        qt_utc = (raw_time.astimezone(timezone.utc) if raw_time.tzinfo
+                  else raw_time.replace(tzinfo=timezone.utc))
+        quote_time = qt_utc.isoformat().replace("+00:00", "Z")
+        age_seconds = round((now_utc - qt_utc).total_seconds(), 1)
+        is_stale = age_seconds > stale_threshold
+    elif bid is None and ask is None and last is None:
+        is_stale = True
+
+    halt_raw = getattr(ticker, "halted", 0) or 0
+    try:
+        halt_flag = int(halt_raw)
+    except (TypeError, ValueError):
+        halt_flag = 0
+    is_halted = halt_flag in (_HALT_HALTED, _HALT_END_PENDING)
+
+    session_state = _detect_et_session_state()
+
+    ref_price = None
+    for p in (last, bid, ask, close):
+        if p is not None and p > 0:
+            ref_price = p
+            break
+
+    warnings: list[dict] = []
+    if is_halted:
+        warnings.append({"code": "HALTED",
+                         "message": f"Instrument is halted (halt_flag={halt_flag})"})
+    if is_stale:
+        age_str = f"{age_seconds}s" if age_seconds is not None else "unknown age"
+        warnings.append({"code": "STALE_QUOTE",
+                         "message": f"Quote is stale ({age_str}, threshold={stale_threshold}s)"})
+    if bid is None and ask is None:
+        warnings.append({"code": "NO_BID_ASK", "message": "No bid/ask data available"})
+    if quote_time is None:
+        warnings.append({"code": "NO_QUOTE_TIME", "message": "Quote timestamp unavailable"})
+    if volume is None:
+        warnings.append({"code": "NO_VOLUME", "message": "Volume data unavailable"})
+    if adv is None:
+        warnings.append({"code": "NO_ADV",
+                         "message": "Average daily volume (ADV) unavailable"})
+    if session_state in ("premarket", "after_hours"):
+        warnings.append({"code": "EXTENDED_HOURS",
+                         "message": f"Trading in {session_state.replace('_', '-')} session"})
+    elif session_state == "closed":
+        warnings.append({"code": "CLOSED_SESSION", "message": "Market is closed"})
+
+    rejected = False
+    rejection_reason = None
+    if is_halted:
+        rejected = True
+        rejection_reason = "HALTED"
+    elif is_stale and (bid is not None or ask is not None):
+        rejected = True
+        rejection_reason = "STALE_QUOTE"
+
+    return {
+        "symbol": symbol,
+        "sec_type": sec_type,
+        "snapshot_timestamp": now_utc.isoformat().replace("+00:00", "Z"),
+        "quote": {
+            "bid": bid, "ask": ask, "last": last, "close": close,
+            "spread": spread, "spread_pct": spread_pct,
+            "quote_time": quote_time,
+        },
+        "session": {
+            "state": session_state,
+            "is_halted": is_halted,
+            "halt_flag": halt_flag,
+        },
+        "staleness": {
+            "is_stale": is_stale,
+            "age_seconds": age_seconds,
+            "stale_threshold_seconds": stale_threshold,
+        },
+        "liquidity": {"volume": volume, "adv": adv},
+        "warnings": warnings,
+        "rejected": rejected,
+        "rejection_reason": rejection_reason,
+        "ref_price": ref_price,
+    }
 
 
 def _fill_status(filled: float, total: float, ib_status: str) -> str:
@@ -117,6 +270,7 @@ def _trade_to_dict(
     submission_ts: str,
     position_snapshot: dict,
     margin_snapshot: dict,
+    quote_snapshot: dict,
 ) -> dict:
     contract = trade.contract
     order = trade.order
@@ -177,6 +331,7 @@ def _trade_to_dict(
         ),
         "position_snapshot": position_snapshot,
         "margin_snapshot": margin_snapshot,
+        "quote_snapshot": quote_snapshot,
         "risk_check": risk_check,
     }
 
@@ -295,20 +450,19 @@ async def place_order(
 
             order = _build_order(args)
 
+            # --- Pre-trade quote snapshot (always fetched for session/halt/staleness gate) ---
+            stale_threshold = getattr(args, "stale_threshold", DEFAULT_STALE_THRESHOLD)
+            quote_snapshot = await _fetch_pre_trade_snapshot(
+                ib, contract, args.symbol, args.sec_type.upper(),
+                args.quantity, stale_threshold,
+            )
+
             # --- Risk pre-check ---
             nlv, excess_liquidity = await _get_nlv_and_excess(ib)
 
-            # Estimate notional: use limit price if available, else last market price
-            ref_price = args.limit_price or 0.0
-            if ref_price == 0.0:
-                ticker = ib.reqMktData(contract, snapshot=True)
-                try:
-                    await asyncio.sleep(3)
-                except asyncio.CancelledError:
-                    raise
-                ref_price = ticker.last or ticker.close or 0.0
-                ib.cancelMktData(contract)
-
+            # Estimate notional: use limit price if LMT, else snapshot ref price
+            ref_price = (args.limit_price if args.limit_price
+                         else (quote_snapshot["ref_price"] or 0.0))
             estimated_notional = ref_price * args.quantity
 
             risk_check = {
@@ -319,7 +473,14 @@ async def place_order(
                 "max_pct_nlv": args.max_pct_nlv,
                 "passed": False,
                 "failures": [],
+                "quote_snapshot": quote_snapshot,
             }
+
+            # Snapshot hard-reject gate (halted or stale instrument)
+            if quote_snapshot["rejected"]:
+                risk_check["failures"].append(
+                    f"Pre-trade snapshot rejected: {quote_snapshot['rejection_reason']}"
+                )
 
             if estimated_notional > args.max_notional:
                 risk_check["failures"].append(
@@ -343,6 +504,7 @@ async def place_order(
                     "timestamp": utc_timestamp(),
                     "status": "risk_check_failed",
                     "risk_check": risk_check,
+                    "quote_snapshot": quote_snapshot,
                 }
 
             risk_check["passed"] = True
@@ -358,7 +520,7 @@ async def place_order(
 
                 return _trade_to_dict(
                     trade, risk_check, audit_id, submission_ts,
-                    position_snapshot, margin_snapshot,
+                    position_snapshot, margin_snapshot, quote_snapshot,
                 )
             except (ConnectionError, ValueError):
                 raise
@@ -370,6 +532,7 @@ async def place_order(
                     "status": "broker_error",
                     "error": str(exc),
                     "risk_check": risk_check,
+                    "quote_snapshot": quote_snapshot,
                 }
     finally:
         ib.disconnect()
@@ -424,6 +587,10 @@ Examples:
                         help=f"Max order notional value in USD (default: {DEFAULT_MAX_NOTIONAL:,.0f})")
     parser.add_argument("--max-pct-nlv", type=float, default=DEFAULT_MAX_PCT_NLV,
                         help=f"Max order size as %% of NLV (default: {DEFAULT_MAX_PCT_NLV})")
+
+    # Snapshot thresholds
+    parser.add_argument("--stale-threshold", type=float, default=DEFAULT_STALE_THRESHOLD,
+                        help=f"Quote age in seconds before the instrument is considered stale (default: {DEFAULT_STALE_THRESHOLD})")
 
     return parser.parse_args()
 

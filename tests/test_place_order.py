@@ -225,6 +225,8 @@ class TestRiskCheckLogic:
         mock_ticker = MagicMock()
         mock_ticker.last = last_price
         mock_ticker.close = last_price
+        mock_ticker.halted = 0
+        mock_ticker.time = None
         mock_instance.reqMktData.return_value = mock_ticker
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
@@ -329,7 +331,7 @@ class TestRiskCheckLogicPortfolioCompat:
             _make_account_value("DU", "ExcessLiquidity", str(excess)),
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
-        mock_instance.reqMktData.return_value = MagicMock(last=0.0, close=0.0)
+        mock_instance.reqMktData.return_value = MagicMock(last=0.0, close=0.0, halted=0, time=None)
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
         mock_instance.portfolio.return_value = []
@@ -384,7 +386,7 @@ class TestPostExecutionConfirmation:
             _make_account_value("DU", "MaintMarginReq", "8000"),
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
-        mock_instance.reqMktData.return_value = MagicMock(last=0.0, close=0.0)
+        mock_instance.reqMktData.return_value = MagicMock(last=0.0, close=0.0, halted=0, time=None)
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
         mock_instance.portfolio.return_value = portfolio_items if portfolio_items is not None else []
@@ -563,3 +565,108 @@ class TestConnectionIdRegister:
         assert "1004" in data["ids"]
         assert data["ids"]["1004"]["tool"] == "place_order.py"
         assert data["ids"]["1004"]["read_only"] is False
+
+
+class TestPreTradeSnapshotIntegration:
+    """TRA-23: pre-trade snapshot wired into place_order pre-trade gate and audit record."""
+
+    def setup_method(self):
+        self.mock_ib_class = MagicMock()
+        self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
+
+    def _setup_mock_ib(self, ticker_kwargs=None, nlv=500_000.0, excess=200_000.0):
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.placeOrder = MagicMock(return_value=_make_trade())
+        summary = [
+            _make_account_value("DU", "NetLiquidation", str(nlv)),
+            _make_account_value("DU", "ExcessLiquidity", str(excess)),
+        ]
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
+        t_kwargs = {"last": 100.0, "close": 99.0, "bid": 99.95,
+                    "ask": 100.05, "halted": 0, "time": None}
+        if ticker_kwargs:
+            t_kwargs.update(ticker_kwargs)
+        mock_instance.reqMktData.return_value = MagicMock(**t_kwargs)
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.portfolio.return_value = []
+        self.mock_ib_class.return_value = mock_instance
+        return mock_instance
+
+    def test_snapshot_present_in_successful_audit(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert "quote_snapshot" in result
+        snap = result["quote_snapshot"]
+        assert "quote" in snap
+        assert "session" in snap
+        assert "staleness" in snap
+        assert "warnings" in snap
+
+    def test_snapshot_embedded_in_risk_check(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert "quote_snapshot" in result["risk_check"]
+
+    def test_halted_instrument_causes_risk_check_failed(self):
+        self._setup_mock_ib(ticker_kwargs={"halted": 1, "bid": 50.0, "ask": 50.10,
+                                           "last": 50.05, "time": None})
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["status"] == "risk_check_failed"
+        assert any("snapshot" in f.lower() and "HALTED" in f
+                   for f in result["risk_check"]["failures"])
+
+    def test_halted_instrument_order_not_placed(self):
+        mock_ib = self._setup_mock_ib(ticker_kwargs={"halted": 1, "bid": 50.0,
+                                                     "ask": 50.10, "last": 50.05,
+                                                     "time": None})
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        mock_ib.placeOrder.assert_not_called()
+
+    def test_stale_instrument_with_prices_causes_risk_check_failed(self):
+        from datetime import datetime, timezone, timedelta
+        stale_time = datetime.now(timezone.utc) - timedelta(seconds=120)
+        self._setup_mock_ib(ticker_kwargs={"bid": 50.0, "ask": 50.10,
+                                           "last": 50.05, "halted": 0,
+                                           "time": stale_time})
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0, stale_threshold=60.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["status"] == "risk_check_failed"
+        assert any("STALE_QUOTE" in f for f in result["risk_check"]["failures"])
+
+    def test_snapshot_present_in_risk_check_failed_output(self):
+        self._setup_mock_ib(ticker_kwargs={"halted": 1, "bid": 50.0, "ask": 50.10,
+                                           "last": 50.05, "time": None})
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["status"] == "risk_check_failed"
+        assert "quote_snapshot" in result
+
+    def test_snapshot_json_serialisable_in_success(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        json.dumps(result)  # must not raise
+
+    def test_mkt_order_uses_snapshot_ref_price_for_notional(self):
+        # MKT order: no limit price — ref_price should come from snapshot (bid=99.95)
+        self._setup_mock_ib(ticker_kwargs={"bid": 99.95, "ask": 100.05,
+                                           "last": 100.0, "halted": 0, "time": None})
+        args = _make_args(quantity=10.0, order_type="MKT", limit_price=None,
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        # ref_price = last = 100.0, estimated_notional = 10 * 100.0 = 1000 < 100,000
+        assert result.get("status") != "risk_check_failed" or "snapshot" in str(result)

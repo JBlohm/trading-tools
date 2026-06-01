@@ -61,9 +61,6 @@ IB_UNSET = 1.7976931348623157e308
 
 DATA_TYPE_NAMES = {1: "live", 2: "frozen", 3: "delayed", 4: "delayed_frozen"}
 
-# Approximate ET = UTC-5 (ignores DST; adequate for session bucket detection)
-_ET_UTC_OFFSET_HOURS = -5
-
 
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -83,8 +80,16 @@ def _safe_float(val) -> "float | None":
 
 
 def _detect_session_state() -> str:
-    """Return session bucket (premarket/regular/after_hours/closed) from UTC clock."""
-    now_et = datetime.now(timezone.utc) + timedelta(hours=_ET_UTC_OFFSET_HOURS)
+    """Return session bucket (premarket/regular/after_hours/closed), DST-aware."""
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+    except ImportError:
+        # Python <3.9 fallback: approximate DST by month/day
+        now_utc = datetime.now(timezone.utc)
+        m, d = now_utc.month, now_utc.day
+        is_dst = (3 < m < 11) or (m == 3 and d >= 8) or (m == 11 and d < 7)
+        now_et = now_utc + timedelta(hours=-4 if is_dst else -5)
     if now_et.weekday() >= 5:
         return "closed"
     hour = now_et.hour + now_et.minute / 60.0
@@ -237,6 +242,21 @@ def _build_snapshot(ticker, args: argparse.Namespace, sec_type: str, data_type: 
         warnings.append({"code": "LOW_LIQUIDITY",
                          "message": (f"Order is {order_pct_adv:.2f}% of ADV "
                                      f"(warning threshold: {args.max_order_pct_adv}%)")})
+
+    # Unavailable-field warning codes — every null must be explicit
+    if quote_time is None:
+        warnings.append({"code": "NO_QUOTE_TIME", "message": "Quote timestamp unavailable"})
+    if volume is None:
+        warnings.append({"code": "NO_VOLUME", "message": "Volume data unavailable"})
+    if adv is None:
+        warnings.append({"code": "NO_ADV", "message": "Average daily volume (ADV) unavailable"})
+    if sec_type == "STK" and shortable_shares is None:
+        warnings.append({"code": "NO_SHORTABLE_SHARES", "message": "Shortable shares data unavailable"})
+    if sec_type in ("OPT", "FOP") and options_out is not None:
+        if all(options_out.get(k) is None for k in ("delta", "gamma", "theta", "vega", "iv")):
+            warnings.append({"code": "NO_OPTION_GREEKS", "message": "Option Greeks unavailable"})
+        if options_out.get("open_interest") is None:
+            warnings.append({"code": "NO_OPEN_INTEREST", "message": "Open interest data unavailable"})
 
     # Hard rejection — first match wins
     rejected = False
