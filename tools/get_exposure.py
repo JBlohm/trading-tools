@@ -10,7 +10,7 @@ Usage:
     python get_exposure.py --live
     python get_exposure.py --by asset_class
 
-Connection ID: 1007 (see tools/connection_ids.json)
+Connection ID: 1013 (see tools/connection_ids.json)
 """
 
 import argparse
@@ -34,7 +34,7 @@ except ImportError:
 DEFAULT_HOST = "192.168.2.187"
 PORT_PAPER = 7497
 PORT_LIVE = 7496
-CLIENT_ID = 1007
+CLIENT_ID = 1013
 CONNECT_TIMEOUT = 10
 ACCOUNT_DATA_TIMEOUT = 5
 

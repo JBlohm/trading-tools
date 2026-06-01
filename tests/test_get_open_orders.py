@@ -133,6 +133,45 @@ class TestTradeToDict:
         result = self.mod._trade_to_dict(trade)
         json.dumps(result)
 
+    def test_risk_impact_present(self):
+        trade = _make_trade()
+        result = self.mod._trade_to_dict(trade)
+        assert "risk_impact" in result
+
+    def test_risk_impact_estimated_notional_for_lmt_order(self):
+        order = _make_order(lmtPrice=175.0, totalQuantity=100.0)
+        status = _make_order_status(remaining=100.0)
+        trade = _make_trade(order=order, status=status)
+        result = self.mod._trade_to_dict(trade)
+        ri = result["risk_impact"]
+        assert ri["estimated_notional"] == pytest.approx(175.0 * 100.0)
+        assert ri["ref_price"] == pytest.approx(175.0)
+        assert ri["price_source"] == "lmt_price"
+
+    def test_risk_impact_notional_none_for_mkt_order(self):
+        order = _make_order(lmtPrice=IB_UNSET)
+        trade = _make_trade(order=order)
+        result = self.mod._trade_to_dict(trade)
+        ri = result["risk_impact"]
+        assert ri["estimated_notional"] is None
+        assert ri["ref_price"] is None
+        assert ri["price_source"] == "unknown"
+
+    def test_risk_impact_uses_remaining_qty(self):
+        order = _make_order(lmtPrice=200.0, totalQuantity=100.0)
+        status = _make_order_status(remaining=60.0)
+        trade = _make_trade(order=order, status=status)
+        result = self.mod._trade_to_dict(trade)
+        ri = result["risk_impact"]
+        assert ri["remaining_qty"] == 60.0
+        assert ri["estimated_notional"] == pytest.approx(200.0 * 60.0)
+
+    def test_risk_impact_action_matches_order(self):
+        order = _make_order(action="SELL")
+        trade = _make_trade(order=order)
+        result = self.mod._trade_to_dict(trade)
+        assert result["risk_impact"]["action"] == "SELL"
+
 
 class TestArgParsing:
     def setup_method(self):

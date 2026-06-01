@@ -52,35 +52,45 @@
       "read_only": true
     },
     "1010": {
+      "tool": "modify_order.py",
+      "description": "Modifies existing open orders via native modify or cancel/replace",
+      "read_only": false
+    },
+    "1011": {
+      "tool": "get_order_status.py",
+      "description": "Polls lifecycle status, fill details, commissions, and event log for a specific order",
+      "read_only": true
+    },
+    "1012": {
       "tool": "pretrade_risk_check.py",
       "description": "Runs structured pre-trade risk gate: portfolio exposure, margin, stress checks, and limit enforcement",
       "read_only": true
     },
-    "1011": {
+    "1013": {
       "tool": "get_exposure.py",
       "description": "Reports current portfolio exposure by symbol and asset class",
       "read_only": true
     },
-    "1012": {
+    "1014": {
       "tool": "get_pnl.py",
       "description": "Reports current P&L (unrealized + realized) for the account and each position",
       "read_only": true
     },
-    "1013": {
+    "1015": {
       "tool": "get_liquidity_metrics.py",
       "description": "Fetches bid/ask spread, volume, and liquidity assessment for a symbol",
       "read_only": true
     },
-    "1014": {
+    "1016": {
       "tool": "get_risk_limits.py",
       "description": "Displays the configured pre-trade risk limits from risk_limits.json",
       "read_only": true
     },
-    "1015": {
+    "1017": {
       "tool": "run_pretrade_stress.py",
       "description": "Runs equity/vol/rate/FX stress scenarios against a proposed order and portfolio",
       "read_only": true
     }
   },
-  "next_available": 1016
+  "next_available": 1018
 }

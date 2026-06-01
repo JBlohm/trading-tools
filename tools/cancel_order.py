@@ -41,6 +41,7 @@ PORT_LIVE = 7496
 CLIENT_ID = 1005
 CONNECT_TIMEOUT = 10
 CANCEL_WAIT = 2.0  # seconds to wait for cancel acknowledgement
+COMPLETED_ORDERS_TIMEOUT = 5.0
 
 
 def utc_timestamp() -> str:
@@ -62,6 +63,40 @@ async def _connect(host: str, port: int, client_id: int) -> IB:
     return ib
 
 
+async def _check_completed_order(ib: IB, order_id: int) -> dict | None:
+    """Return an already_done result if the order exists in completed orders."""
+    try:
+        completed = await asyncio.wait_for(
+            ib.reqCompletedOrdersAsync(apiOnly=False),
+            timeout=COMPLETED_ORDERS_TIMEOUT,
+        )
+    except Exception:
+        return None
+
+    for trade in completed:
+        if trade.order.orderId == order_id:
+            order = trade.order
+            contract = trade.contract
+            final_status = trade.orderStatus.status
+            return {
+                "timestamp": utc_timestamp(),
+                "status": "already_done",
+                "order_id": order_id,
+                "perm_id": order.permId,
+                "symbol": contract.symbol,
+                "sec_type": contract.secType,
+                "currency": contract.currency,
+                "action": order.action,
+                "order_type": order.orderType,
+                "quantity": order.totalQuantity,
+                "final_order_status": final_status,
+                "message": (
+                    f"Order {order_id} is already in terminal state: {final_status}"
+                ),
+            }
+    return None
+
+
 async def _find_open_trade(ib: IB, order_id: int):
     open_trades = await ib.reqAllOpenOrdersAsync()
     for trade in open_trades:
@@ -78,6 +113,10 @@ async def cancel_order(host: str, port: int, client_id: int, order_id: int) -> d
             target_trade = await _find_open_trade(ib, order_id)
 
         if target_trade is None:
+            # Idempotent: check completed orders before declaring not_found
+            completed_status = await _check_completed_order(ib, order_id)
+            if completed_status is not None:
+                return completed_status
             return {
                 "timestamp": utc_timestamp(),
                 "status": "not_found",
@@ -188,6 +227,7 @@ def main() -> None:
         print(json.dumps(result, indent=2), file=sys.stderr)
         sys.exit(1)
 
+    # already_done is idempotent success — print to stdout with exit 0
     print(json.dumps(result, indent=2))
 
 

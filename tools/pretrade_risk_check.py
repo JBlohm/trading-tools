@@ -16,7 +16,7 @@ As a library:
     limits = load_limits()
     result = asyncio.run(run_check(ib, order_dict, limits))
 
-Connection ID: 1010 (see tools/connection_ids.json)
+Connection ID: 1012 (see tools/connection_ids.json)
 """
 
 import argparse
@@ -41,7 +41,7 @@ except ImportError:
 DEFAULT_HOST = "192.168.2.187"
 PORT_PAPER = 7497
 PORT_LIVE = 7496
-CLIENT_ID = 1010
+CLIENT_ID = 1012
 CONNECT_TIMEOUT = 10
 ACCOUNT_DATA_TIMEOUT = 5
 MARKET_DATA_TIMEOUT = 3

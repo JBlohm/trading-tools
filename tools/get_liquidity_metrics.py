@@ -9,7 +9,7 @@ Usage:
     python get_liquidity_metrics.py --symbol AAPL
     python get_liquidity_metrics.py --symbol SPY --live
 
-Connection ID: 1009 (see tools/connection_ids.json)
+Connection ID: 1015 (see tools/connection_ids.json)
 """
 
 import argparse
@@ -33,7 +33,7 @@ except ImportError:
 DEFAULT_HOST = "192.168.2.187"
 PORT_PAPER = 7497
 PORT_LIVE = 7496
-CLIENT_ID = 1009
+CLIENT_ID = 1015
 CONNECT_TIMEOUT = 10
 MARKET_DATA_TIMEOUT = 5
 IB_UNSET = 1.7976931348623157e308

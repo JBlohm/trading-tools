@@ -6,7 +6,7 @@ Usage:
     python get_pnl.py
     python get_pnl.py --live
 
-Connection ID: 1008 (see tools/connection_ids.json)
+Connection ID: 1014 (see tools/connection_ids.json)
 """
 
 import argparse
@@ -30,7 +30,7 @@ except ImportError:
 DEFAULT_HOST = "192.168.2.187"
 PORT_PAPER = 7497
 PORT_LIVE = 7496
-CLIENT_ID = 1008
+CLIENT_ID = 1014
 CONNECT_TIMEOUT = 10
 ACCOUNT_DATA_TIMEOUT = 5
 
