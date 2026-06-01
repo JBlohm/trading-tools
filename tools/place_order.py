@@ -127,8 +127,7 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
     else:
         ticker = await _stream_and_cancel(1, half)
         if (_safe_float(ticker.bid) is None
-                and _safe_float(ticker.ask) is None
-                and _safe_float(ticker.last) is None):
+                or _safe_float(ticker.ask) is None):
             ticker = await _stream_and_cancel(3, half)
 
     bid = _safe_float(ticker.bid)
