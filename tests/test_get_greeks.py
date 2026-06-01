@@ -239,6 +239,139 @@ class TestMain:
         assert self.mod.utc_timestamp().endswith("Z")
 
 
+class TestBucketedGreeks:
+    def setup_method(self):
+        self.mod, _ = _inject_fake_ib_async()
+
+    def test_empty_positions_returns_empty_buckets(self):
+        result = self.mod._build_bucketed_greeks([], {})
+        assert result == {"by_underlying": {}, "by_expiry": {}, "by_strategy": {}}
+
+    def test_single_option_bucketed_by_symbol_and_expiry(self):
+        pos = {
+            "symbol": "SPY",
+            "expiry": "20251220",
+            "strike": 500.0,
+            "right": "P",
+        }
+        scaled = {"delta": 1.0, "gamma": 0.02, "theta": -0.1, "vega": 0.3, "iv": 0.25}
+        result = self.mod._build_bucketed_greeks([pos], {("SPY", "20251220", 500.0, "P"): scaled})
+        assert "SPY" in result["by_underlying"]
+        assert result["by_underlying"]["SPY"]["delta"] == pytest.approx(1.0)
+        assert "20251220" in result["by_expiry"]
+        assert result["by_expiry"]["20251220"]["vega"] == pytest.approx(0.3)
+
+    def test_multiple_positions_same_underlying_aggregated(self):
+        positions = [
+            {"symbol": "SPY", "expiry": "20251220", "strike": 500.0, "right": "C"},
+            {"symbol": "SPY", "expiry": "20251220", "strike": 510.0, "right": "P"},
+        ]
+        scaled_map = {
+            ("SPY", "20251220", 500.0, "C"): {"delta": 0.5, "gamma": 0.01, "theta": -0.05, "vega": 0.2, "iv": None},
+            ("SPY", "20251220", 510.0, "P"): {"delta": -0.4, "gamma": 0.01, "theta": -0.05, "vega": 0.15, "iv": None},
+        }
+        result = self.mod._build_bucketed_greeks(positions, scaled_map)
+        assert result["by_underlying"]["SPY"]["delta"] == pytest.approx(0.1)
+        assert result["by_underlying"]["SPY"]["vega"] == pytest.approx(0.35)
+        assert result["by_underlying"]["SPY"]["position_count"] == 2
+
+    def test_positions_with_different_underlyings_bucketed_separately(self):
+        positions = [
+            {"symbol": "SPY", "expiry": "20251220", "strike": 500.0, "right": "C"},
+            {"symbol": "QQQ", "expiry": "20251220", "strike": 400.0, "right": "P"},
+        ]
+        scaled_map = {
+            ("SPY", "20251220", 500.0, "C"): {"delta": 0.5, "gamma": 0.01, "theta": -0.05, "vega": 0.2, "iv": None},
+            ("QQQ", "20251220", 400.0, "P"): {"delta": -0.3, "gamma": 0.02, "theta": -0.08, "vega": 0.1, "iv": None},
+        }
+        result = self.mod._build_bucketed_greeks(positions, scaled_map)
+        assert "SPY" in result["by_underlying"]
+        assert "QQQ" in result["by_underlying"]
+        assert result["by_underlying"]["SPY"]["delta"] == pytest.approx(0.5)
+        assert result["by_underlying"]["QQQ"]["delta"] == pytest.approx(-0.3)
+
+    def test_positions_with_different_expiries_bucketed_separately(self):
+        positions = [
+            {"symbol": "SPY", "expiry": "20251220", "strike": 500.0, "right": "C"},
+            {"symbol": "SPY", "expiry": "20260117", "strike": 500.0, "right": "C"},
+        ]
+        scaled_map = {
+            ("SPY", "20251220", 500.0, "C"): {"delta": 0.5, "gamma": 0.01, "theta": -0.1, "vega": 0.2, "iv": None},
+            ("SPY", "20260117", 500.0, "C"): {"delta": 0.4, "gamma": 0.01, "theta": -0.08, "vega": 0.15, "iv": None},
+        }
+        result = self.mod._build_bucketed_greeks(positions, scaled_map)
+        assert "20251220" in result["by_expiry"]
+        assert "20260117" in result["by_expiry"]
+        assert result["by_expiry"]["20251220"]["delta"] == pytest.approx(0.5)
+        assert result["by_expiry"]["20260117"]["delta"] == pytest.approx(0.4)
+
+    def test_position_without_scaled_greeks_skipped(self):
+        pos = {"symbol": "SPY", "expiry": "20251220", "strike": 500.0, "right": "C"}
+        result = self.mod._build_bucketed_greeks([pos], {})
+        assert result["by_underlying"] == {}
+        assert result["by_expiry"] == {}
+
+    def test_none_expiry_uses_no_expiry_key(self):
+        pos = {"symbol": "AAPL", "expiry": None, "strike": None, "right": None}
+        scaled = {"delta": 100.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": None}
+        result = self.mod._build_bucketed_greeks([pos], {("AAPL", None, None, None): scaled})
+        assert "no_expiry" in result["by_expiry"]
+        assert result["by_expiry"]["no_expiry"]["delta"] == pytest.approx(100.0)
+
+    def test_positions_with_strategy_bucketed_separately(self):
+        positions = [
+            {"symbol": "SPY", "expiry": "20251220", "strike": 500.0, "right": "C", "strategy": "income"},
+            {"symbol": "SPY", "expiry": "20251220", "strike": 510.0, "right": "P", "strategy": "hedge"},
+        ]
+        scaled_map = {
+            ("SPY", "20251220", 500.0, "C"): {"delta": 0.5, "gamma": 0.01, "theta": -0.05, "vega": 0.2, "iv": None},
+            ("SPY", "20251220", 510.0, "P"): {"delta": -0.4, "gamma": 0.01, "theta": -0.05, "vega": 0.15, "iv": None},
+        }
+        result = self.mod._build_bucketed_greeks(positions, scaled_map)
+        assert result["by_strategy"]["income"]["delta"] == pytest.approx(0.5)
+        assert result["by_strategy"]["hedge"]["delta"] == pytest.approx(-0.4)
+
+    def test_position_without_strategy_uses_unassigned_bucket(self):
+        pos = {"symbol": "AAPL", "expiry": None, "strike": None, "right": None}
+        scaled = {"delta": 100.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": None}
+        result = self.mod._build_bucketed_greeks([pos], {("AAPL", None, None, None): scaled})
+        assert result["by_strategy"]["unassigned"]["delta"] == pytest.approx(100.0)
+
+    def test_fetch_greeks_result_includes_bucketed_greeks_key(self):
+        mock_ib_class = MagicMock()
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.portfolio.return_value = []
+        mock_instance.disconnect = MagicMock()
+        mock_ib_class.return_value = mock_instance
+        result = asyncio.run(mod.fetch_greeks("127.0.0.1", 7497, 1001))
+        assert "bucketed_greeks" in result
+        assert "by_underlying" in result["bucketed_greeks"]
+        assert "by_expiry" in result["bucketed_greeks"]
+        assert "by_strategy" in result["bucketed_greeks"]
+
+    def test_fetch_greeks_populates_bucketed_greeks_for_options(self):
+        mock_ib_class = MagicMock()
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        item = _make_portfolio_item(position=2.0)
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.portfolio.return_value = [item]
+        mock_ticker = MagicMock()
+        mock_ticker.modelGreeks = _make_greeks(delta=0.5, gamma=0.01, theta=-0.1, vega=0.2)
+        mock_ticker.lastGreeks = None
+        mock_instance.reqMktData.return_value = mock_ticker
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_ib_class.return_value = mock_instance
+        result = asyncio.run(mod.fetch_greeks("127.0.0.1", 7497, 1001))
+        bucketed = result["bucketed_greeks"]
+        assert "SPY" in bucketed["by_underlying"]
+        assert bucketed["by_underlying"]["SPY"]["delta"] == pytest.approx(1.0)  # 0.5 * 2
+        assert "20251220" in bucketed["by_expiry"]
+
+
 class TestConnectionIdRegister:
     def test_get_greeks_registered(self):
         import pathlib, json

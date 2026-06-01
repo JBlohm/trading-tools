@@ -4,7 +4,7 @@ Retrieves a real-time market data snapshot for a given instrument from Interacti
 
 Hard rejects (halted instrument, stale quote, order too large relative to ADV) are written to **stderr** with exit code 2 and `"rejected": true` in the payload.
 
-Connection ID: **1006** (read-only)
+Connection ID: **1009** (read-only)
 
 ## Prerequisites
 

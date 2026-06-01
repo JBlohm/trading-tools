@@ -312,6 +312,225 @@ class TestRiskCheckLogic:
         assert capsys.readouterr().out == ""
 
 
+class TestRiskCheckLogicPortfolioCompat:
+    """Ensure existing risk-check tests still work after _fetch_position_snapshot was added."""
+
+    def setup_method(self):
+        self.mock_ib_class = MagicMock()
+        self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
+
+    def _setup_mock_ib(self, nlv=500_000.0, excess=200_000.0):
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.placeOrder = MagicMock(return_value=_make_trade())
+        summary = [
+            _make_account_value("DU", "NetLiquidation", str(nlv)),
+            _make_account_value("DU", "ExcessLiquidity", str(excess)),
+        ]
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
+        mock_instance.reqMktData.return_value = MagicMock(last=0.0, close=0.0)
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.portfolio.return_value = []
+        self.mock_ib_class.return_value = mock_instance
+        return mock_instance
+
+    def test_risk_check_failed_has_audit_id(self):
+        import re
+        self._setup_mock_ib(nlv=500_000, excess=200_000)
+        args = _make_args(quantity=10_000.0, limit_price=200.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["status"] == "risk_check_failed"
+        assert "audit_id" in result
+        uuid_re = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+        assert uuid_re.match(result["audit_id"]), f"Not a UUID: {result['audit_id']}"
+
+
+class TestPostExecutionConfirmation:
+    """TRA-26: post-execution confirmation fields, fill statuses, and audit trail."""
+
+    def setup_method(self):
+        self.mock_ib_class = MagicMock()
+        self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
+
+    def _setup_mock_ib(
+        self,
+        nlv=500_000.0,
+        excess=200_000.0,
+        order_status_kwargs=None,
+        portfolio_items=None,
+    ):
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+
+        os_kwargs = {
+            "status": "PreSubmitted", "filled": 0.0,
+            "remaining": 10.0, "avgFillPrice": 0.0, "whyHeld": "",
+        }
+        if order_status_kwargs:
+            os_kwargs.update(order_status_kwargs)
+
+        trade = _make_trade(status=_make_order_status(**os_kwargs))
+        mock_instance.placeOrder = MagicMock(return_value=trade)
+
+        summary = [
+            _make_account_value("DU", "NetLiquidation", str(nlv)),
+            _make_account_value("DU", "ExcessLiquidity", str(excess)),
+            _make_account_value("DU", "BuyingPower", str(nlv * 2)),
+            _make_account_value("DU", "InitMarginReq", "10000"),
+            _make_account_value("DU", "MaintMarginReq", "8000"),
+        ]
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
+        mock_instance.reqMktData.return_value = MagicMock(last=0.0, close=0.0)
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.portfolio.return_value = portfolio_items if portfolio_items is not None else []
+        self.mock_ib_class.return_value = mock_instance
+        return mock_instance
+
+    @staticmethod
+    def _make_portfolio_item(symbol="AAPL", position=10.0):
+        item = MagicMock()
+        item.contract.symbol = symbol
+        item.contract.secType = "STK"
+        item.contract.conId = 265598
+        item.position = position
+        item.marketPrice = 150.0
+        item.marketValue = position * 150.0
+        item.averageCost = 145.0
+        item.unrealizedPNL = (150.0 - 145.0) * position
+        item.realizedPNL = 0.0
+        item.account = "DU123456"
+        return item
+
+    def test_accepted_order_has_all_required_confirmation_fields(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        required = [
+            "audit_id", "submission_timestamp", "broker_ack_timestamp",
+            "client_order_id", "broker_order_id",
+            "accepted", "rejection_reason", "ib_order_status",
+            "fill_status", "filled_quantity", "remaining_quantity",
+            "average_fill_price", "commission", "commission_note",
+            "position_snapshot", "margin_snapshot", "risk_check",
+        ]
+        for field in required:
+            assert field in result, f"Missing required field: {field}"
+
+    def test_accepted_order_accepted_true_no_rejection_reason(self):
+        self._setup_mock_ib(order_status_kwargs={"status": "PreSubmitted"})
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["accepted"] is True
+        assert result["rejection_reason"] is None
+
+    def test_rejected_order_is_structured_not_an_exception(self):
+        self._setup_mock_ib(order_status_kwargs={"status": "Inactive", "whyHeld": "risk limits"})
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["accepted"] is False
+        assert result["rejection_reason"] is not None
+        assert result["fill_status"] == "rejected"
+
+    def test_partial_fill(self):
+        self._setup_mock_ib(order_status_kwargs={
+            "status": "PartiallyFilled", "filled": 5.0, "remaining": 5.0, "avgFillPrice": 50.0,
+        })
+        args = _make_args(quantity=10.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["fill_status"] == "partial_fill"
+        assert result["filled_quantity"] == pytest.approx(5.0)
+        assert result["remaining_quantity"] == pytest.approx(5.0)
+        assert result["average_fill_price"] == pytest.approx(50.0)
+
+    def test_full_fill(self):
+        self._setup_mock_ib(order_status_kwargs={
+            "status": "Filled", "filled": 10.0, "remaining": 0.0, "avgFillPrice": 50.25,
+        })
+        args = _make_args(quantity=10.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["fill_status"] == "filled"
+        assert result["filled_quantity"] == pytest.approx(10.0)
+        assert result["average_fill_price"] == pytest.approx(50.25)
+
+    def test_open_order_no_fill(self):
+        self._setup_mock_ib(order_status_kwargs={
+            "status": "Submitted", "filled": 0.0, "remaining": 10.0,
+        })
+        args = _make_args(quantity=10.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["fill_status"] == "open"
+        assert result["filled_quantity"] == pytest.approx(0.0)
+
+    def test_broker_error_returns_structured_dict(self):
+        mock_ib = self._setup_mock_ib()
+        mock_ib.placeOrder.side_effect = RuntimeError("TWS rejected: invalid contract")
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["status"] == "broker_error"
+        assert "error" in result
+        assert "audit_id" in result
+
+    def test_audit_id_is_uuid(self):
+        import re
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        uuid_re = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+        assert uuid_re.match(result["audit_id"]), f"Not a UUID: {result['audit_id']}"
+
+    def test_position_snapshot_returned_with_symbol_filter(self):
+        item = self._make_portfolio_item(symbol="AAPL", position=10.0)
+        self._setup_mock_ib(portfolio_items=[item])
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        snap = result["position_snapshot"]
+        assert snap["available"] is True
+        assert len(snap["positions"]) == 1
+        assert snap["positions"][0]["symbol"] == "AAPL"
+        assert snap["positions"][0]["position"] == pytest.approx(10.0)
+
+    def test_position_snapshot_available_false_on_error(self):
+        mock_ib = self._setup_mock_ib()
+        mock_ib.portfolio.side_effect = RuntimeError("portfolio unavailable")
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["position_snapshot"]["available"] is False
+
+    def test_margin_snapshot_returned(self):
+        self._setup_mock_ib(nlv=500_000, excess=200_000)
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        snap = result["margin_snapshot"]
+        assert snap["available"] is True
+        acct = list(snap["accounts"].values())[0]
+        assert acct["nlv"] == pytest.approx(500_000.0)
+        assert acct["excess_liquidity"] == pytest.approx(200_000.0)
+
+    def test_full_result_json_serialisable(self):
+        item = self._make_portfolio_item()
+        self._setup_mock_ib(portfolio_items=[item])
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        json.dumps(result)  # must not raise
+
+
 class TestConnectionIdRegister:
     def test_place_order_registered_as_not_readonly(self):
         import pathlib, json

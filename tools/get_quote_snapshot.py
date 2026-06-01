@@ -17,7 +17,7 @@ Usage:
     python get_quote_snapshot.py --symbol AAPL --sec-type OPT \\
         --expiry 20260619 --strike 180 --right C --quantity 10
 
-Connection ID: 1006 (see tools/connection_ids.json)
+Connection ID: 1009 (see tools/connection_ids.json)
 """
 
 import argparse
@@ -46,7 +46,7 @@ except ImportError:
 DEFAULT_HOST = "192.168.2.187"
 PORT_PAPER = 7497
 PORT_LIVE = 7496
-CLIENT_ID = 1006
+CLIENT_ID = 1009
 CONNECT_TIMEOUT = 10
 MARKET_DATA_TIMEOUT = 5  # seconds to wait for snapshot data
 

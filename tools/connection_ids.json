@@ -8,7 +8,7 @@
     },
     "1001": {
       "tool": "get_greeks.py",
-      "description": "Reads portfolio-level option Greeks (delta/gamma/theta/vega) from TWS",
+      "description": "Reads portfolio-level option Greeks (delta/gamma/theta/vega) and bucketed Greeks from TWS",
       "read_only": true
     },
     "1002": {
@@ -32,10 +32,25 @@
       "read_only": false
     },
     "1006": {
+      "tool": "flatten_position.py",
+      "description": "Emergency de-risking: closes all positions in a given scope (symbol, strategy, or account)",
+      "read_only": false
+    },
+    "1007": {
+      "tool": "monitor_stops.py",
+      "description": "Monitors stop and target orders for open positions; flags missing or stale stops",
+      "read_only": true
+    },
+    "1008": {
+      "tool": "get_risk_breaches.py",
+      "description": "Detects current and projected portfolio risk limit breaches (delta, vega, concentration, margin)",
+      "read_only": true
+    },
+    "1009": {
       "tool": "get_quote_snapshot.py",
       "description": "Pre-trade quote, session state, and liquidity snapshot from TWS",
       "read_only": true
     }
   },
-  "next_available": 1007
+  "next_available": 1010
 }

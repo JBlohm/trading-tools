@@ -568,9 +568,9 @@ class TestConnectionIdRegister:
         import pathlib
         reg = pathlib.Path(__file__).parent.parent / "tools" / "connection_ids.json"
         data = json.loads(reg.read_text())
-        assert "1006" in data["ids"]
-        assert data["ids"]["1006"]["tool"] == "get_quote_snapshot.py"
-        assert data["ids"]["1006"]["read_only"] is True
+        assert "1009" in data["ids"]
+        assert data["ids"]["1009"]["tool"] == "get_quote_snapshot.py"
+        assert data["ids"]["1009"]["read_only"] is True
 
 
 # ---------------------------------------------------------------------------
