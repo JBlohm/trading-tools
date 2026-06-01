@@ -130,7 +130,8 @@ def _trade_to_dict(
     )
 
     filled = float(getattr(status, "filled", 0.0) or 0.0)
-    remaining = float(getattr(status, "remaining", order.totalQuantity) or order.totalQuantity)
+    _remaining = getattr(status, "remaining", None)
+    remaining = float(order.totalQuantity) if _remaining is None else float(_remaining)
     avg_fill_price_raw = float(getattr(status, "avgFillPrice", 0.0) or 0.0)
     avg_fill_price = avg_fill_price_raw if avg_fill_price_raw > 0 else None
 
@@ -227,7 +228,7 @@ async def _fetch_position_snapshot(ib: IB, symbol: str) -> dict:
         symbol_positions = [p for p in positions if p["symbol"] == symbol]
         return {
             "available": True,
-            "positions": symbol_positions if symbol_positions else positions,
+            "positions": symbol_positions,
             "timestamp": utc_timestamp(),
         }
     except Exception as exc:

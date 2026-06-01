@@ -460,6 +460,7 @@ class TestPostExecutionConfirmation:
         result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         assert result["fill_status"] == "filled"
         assert result["filled_quantity"] == pytest.approx(10.0)
+        assert result["remaining_quantity"] == pytest.approx(0.0)
         assert result["average_fill_price"] == pytest.approx(50.25)
 
     def test_open_order_no_fill(self):
@@ -502,6 +503,29 @@ class TestPostExecutionConfirmation:
         assert len(snap["positions"]) == 1
         assert snap["positions"][0]["symbol"] == "AAPL"
         assert snap["positions"][0]["position"] == pytest.approx(10.0)
+
+    def test_position_snapshot_filters_to_traded_symbol_only(self):
+        """Other portfolio positions must not leak into the confirmation."""
+        aapl_item = self._make_portfolio_item(symbol="AAPL", position=5.0)
+        spy_item = self._make_portfolio_item(symbol="SPY", position=100.0)
+        self._setup_mock_ib(portfolio_items=[aapl_item, spy_item])
+        args = _make_args(symbol="AAPL", quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        snap = result["position_snapshot"]
+        assert snap["available"] is True
+        assert all(p["symbol"] == "AAPL" for p in snap["positions"]), "SPY leaked into snapshot"
+
+    def test_position_snapshot_empty_list_when_no_matching_symbol(self):
+        """If account has positions but none match the traded symbol, return empty list."""
+        spy_item = self._make_portfolio_item(symbol="SPY", position=100.0)
+        self._setup_mock_ib(portfolio_items=[spy_item])
+        args = _make_args(symbol="AAPL", quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        snap = result["position_snapshot"]
+        assert snap["available"] is True
+        assert snap["positions"] == []
 
     def test_position_snapshot_available_false_on_error(self):
         mock_ib = self._setup_mock_ib()
