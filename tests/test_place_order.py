@@ -357,10 +357,10 @@ class TestRiskCheckLogicPortfolioCompat:
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
         ticker = MagicMock()
-        ticker.bid = None
-        ticker.ask = None
-        ticker.last = 0.0
-        ticker.close = 0.0
+        ticker.bid = 49.95
+        ticker.ask = 50.05
+        ticker.last = 50.0
+        ticker.close = 49.9
         ticker.halted = 0
         ticker.time = None
         ticker.modelGreeks = None
@@ -422,10 +422,11 @@ class TestPostExecutionConfirmation:
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
         mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
         ticker = MagicMock()
-        ticker.bid = None
-        ticker.ask = None
-        ticker.last = 0.0
-        ticker.close = 0.0
+        # Provide valid bid/ask so the NO_BID_ASK gate doesn't reject
+        ticker.bid = 49.95
+        ticker.ask = 50.05
+        ticker.last = 50.0
+        ticker.close = 49.9
         ticker.halted = 0
         ticker.time = None
         ticker.modelGreeks = None
@@ -720,3 +721,103 @@ class TestPreTradeSnapshotIntegration:
         result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         # ref_price = last = 100.0, estimated_notional = 10 * 100.0 = 1000 < 100,000
         assert result.get("status") != "risk_check_failed" or "snapshot" in str(result)
+
+
+# ---------------------------------------------------------------------------
+# NO_BID_ASK hard-reject and delayed-data fallback in pre-trade snapshot (TRA-29)
+# ---------------------------------------------------------------------------
+
+class TestPreTradeSnapshotDelayedData:
+    """TRA-29: reqMarketDataType(3) fallback and NO_BID_ASK hard-reject in place_order."""
+
+    def setup_method(self):
+        self.mock_ib_class = MagicMock()
+        self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
+
+    def _setup_mock_ib_with_ticker(self, ticker_data: dict, nlv=500_000.0, excess=200_000.0):
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.placeOrder = MagicMock(return_value=_make_trade())
+        summary = [
+            _make_account_value("DU", "NetLiquidation", str(nlv)),
+            _make_account_value("DU", "ExcessLiquidity", str(excess)),
+        ]
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
+        mock_instance.portfolio.return_value = []
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.reqMarketDataType = MagicMock()
+        ticker = SimpleNamespace(**ticker_data)
+        mock_instance.reqMktData.return_value = ticker
+        self.mock_ib_class.return_value = mock_instance
+        return mock_instance
+
+    def test_no_bid_ask_causes_risk_check_failed(self):
+        """All-null market data must hard-reject the order, not silently pass."""
+        self._setup_mock_ib_with_ticker({
+            "bid": None, "ask": None, "last": None,
+            "close": None, "halted": 0, "time": None,
+            "modelGreeks": None, "lastGreeks": None,
+        })
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT")
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["status"] == "risk_check_failed"
+        assert result["quote_snapshot"]["rejected"] is True
+        assert result["quote_snapshot"]["rejection_reason"] == "NO_BID_ASK"
+
+    def test_no_bid_ask_order_not_placed(self):
+        """Order must not be submitted when no market data is available."""
+        mock_ib = self._setup_mock_ib_with_ticker({
+            "bid": None, "ask": None, "last": None,
+            "close": None, "halted": 0, "time": None,
+            "modelGreeks": None, "lastGreeks": None,
+        })
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT")
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        mock_ib.placeOrder.assert_not_called()
+
+    def test_reqMarketDataType_called_with_3_on_null_live_data(self):
+        """reqMarketDataType(3) must be called when live data is all-null."""
+        mock_ib = self._setup_mock_ib_with_ticker({
+            "bid": None, "ask": None, "last": None,
+            "close": None, "halted": 0, "time": None,
+            "modelGreeks": None, "lastGreeks": None,
+        })
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT")
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        calls = [c.args[0] for c in mock_ib.reqMarketDataType.call_args_list]
+        assert 3 in calls, f"reqMarketDataType(3) not called; calls={calls}"
+
+    def test_delayed_flag_order_passes_with_valid_data(self):
+        """--delayed flag: order proceeds when delayed data returns valid bid/ask."""
+        self._setup_mock_ib_with_ticker({
+            "bid": 99.95, "ask": 100.05, "last": 100.0,
+            "close": 99.9, "halted": 0, "time": None,
+            "modelGreeks": None, "lastGreeks": None,
+        })
+        args = _make_args(quantity=1.0, limit_price=100.0, order_type="LMT", delayed=True)
+        with patch("tools.place_order._run_risk_check",
+                   new=AsyncMock(return_value={
+                       "verdict": "pass", "audit_id": "x", "timestamp": "t",
+                       "failures": [], "warnings": [], "risk_checks": [],
+                       "stress_results": {}, "limit_utilization": {},
+                       "account": {}, "projected_position": {}, "margin_impact": {}, "order": {},
+                   })), \
+             patch("tools.place_order._load_limits", return_value={}):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result.get("status") != "risk_check_failed"
+
+    def test_streaming_mode_used_in_pre_trade_snapshot(self):
+        """snapshot=False must be used in _fetch_pre_trade_snapshot (streaming mode)."""
+        self._setup_mock_ib_with_ticker({
+            "bid": 99.95, "ask": 100.05, "last": 100.0,
+            "close": 99.9, "halted": 0, "time": None,
+            "modelGreeks": None, "lastGreeks": None,
+        })
+        args = _make_args(quantity=1.0, limit_price=100.0, order_type="LMT")
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        mock_ib = self.mock_ib_class.return_value
+        first_call = mock_ib.reqMktData.call_args_list[0]
+        assert first_call.kwargs.get("snapshot") is False or first_call.args[2:3] == (False,)

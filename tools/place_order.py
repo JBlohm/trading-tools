@@ -102,16 +102,34 @@ def _detect_et_session_state() -> str:
 
 
 async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
-                                    quantity, stale_threshold: float) -> dict:
+                                    quantity, stale_threshold: float,
+                                    delayed: bool = False) -> dict:
     """Fetch a market data snapshot for the pre-trade gate and audit record."""
     now_utc = datetime.now(timezone.utc)
-    ticker = ib.reqMktData(contract, genericTickList="100,101,106,236",
-                           snapshot=True, regulatorySnapshot=False)
-    try:
-        await asyncio.sleep(SNAPSHOT_TIMEOUT)
-    except asyncio.CancelledError:
-        raise
-    ib.cancelMktData(contract)
+
+    _GENERIC_TICKS = "100,101,106,236"
+    half = SNAPSHOT_TIMEOUT / 2
+
+    async def _stream_and_cancel(market_data_type: int, wait_time: float):
+        ib.reqMarketDataType(market_data_type)
+        t = ib.reqMktData(contract, genericTickList=_GENERIC_TICKS,
+                          snapshot=False, regulatorySnapshot=False)
+        try:
+            await asyncio.sleep(wait_time)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            ib.cancelMktData(contract)
+        return t
+
+    if delayed:
+        ticker = await _stream_and_cancel(3, SNAPSHOT_TIMEOUT)
+    else:
+        ticker = await _stream_and_cancel(1, half)
+        if (_safe_float(ticker.bid) is None
+                and _safe_float(ticker.ask) is None
+                and _safe_float(ticker.last) is None):
+            ticker = await _stream_and_cancel(3, half)
 
     bid = _safe_float(ticker.bid)
     ask = _safe_float(ticker.ask)
@@ -183,6 +201,10 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
     if is_halted:
         rejected = True
         rejection_reason = "HALTED"
+    elif bid is None and ask is None:
+        # No market data received after live + delayed attempts — hard-reject
+        rejected = True
+        rejection_reason = "NO_BID_ASK"
     elif is_stale and (bid is not None or ask is not None):
         rejected = True
         rejection_reason = "STALE_QUOTE"
@@ -455,9 +477,10 @@ async def place_order(
 
             # --- Pre-trade quote snapshot (always fetched for session/halt/staleness gate) ---
             stale_threshold = getattr(args, "stale_threshold", DEFAULT_STALE_THRESHOLD)
+            delayed = getattr(args, "delayed", False)
             quote_snapshot = await _fetch_pre_trade_snapshot(
                 ib, contract, args.symbol, args.sec_type.upper(),
-                args.quantity, stale_threshold,
+                args.quantity, stale_threshold, delayed=delayed,
             )
             if quote_snapshot["rejected"] and not simulation:
                 failure_message = f"Pre-trade snapshot rejected: {quote_snapshot['rejection_reason']}"
@@ -594,6 +617,11 @@ Examples:
     # Risk gate
     parser.add_argument("--simulation", action="store_true",
                         help="Simulation/test mode: bypass risk gate failures and place the order anyway")
+
+    # Market data type
+    parser.add_argument("--delayed", action="store_true",
+                        help="Request delayed market data (type 3) for the pre-trade snapshot; "
+                             "skips live attempt. Use for paper accounts without live subscriptions.")
 
     # Snapshot thresholds
     parser.add_argument("--stale-threshold", type=float, default=DEFAULT_STALE_THRESHOLD,

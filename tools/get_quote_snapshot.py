@@ -48,7 +48,7 @@ PORT_PAPER = 7497
 PORT_LIVE = 7496
 CLIENT_ID = 1009
 CONNECT_TIMEOUT = 10
-MARKET_DATA_TIMEOUT = 5  # seconds to wait for snapshot data
+MARKET_DATA_TIMEOUT = 5  # seconds to wait for market data (split across live + delayed attempts)
 
 DEFAULT_STALE_THRESHOLD = 60        # seconds — quote age before stale flag
 DEFAULT_MAX_SPREAD_PCT = 0.5        # percent — spread warning threshold
@@ -264,6 +264,10 @@ def _build_snapshot(ticker, args: argparse.Namespace, sec_type: str, data_type: 
     if is_halted:
         rejected = True
         rejection_reason = "HALTED"
+    elif bid is None and ask is None:
+        # No market data received — hard-reject even after delayed-data fallback
+        rejected = True
+        rejection_reason = "NO_BID_ASK"
     elif is_stale and (bid is not None or ask is not None):
         # Reject only when we can confirm data is stale (have prices but stale timestamp)
         rejected = True
@@ -334,14 +338,6 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
             contract = _build_contract(args)
             await ib.qualifyContractsAsync(contract)
 
-            # Generic tick list: 100=opt_vol, 101=opt_OI, 106=IV, 236=shortable
-            ticker = ib.reqMktData(
-                contract,
-                genericTickList="100,101,106,236",
-                snapshot=True,
-                regulatorySnapshot=False,
-            )
-
             # Track data type reported by TWS for source labeling
             data_type_ref = [1]
 
@@ -353,11 +349,34 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
             except AttributeError:
                 pass  # older ib_async versions; data_type stays 1 (live)
 
-            try:
-                await asyncio.sleep(MARKET_DATA_TIMEOUT)
-            except asyncio.CancelledError:
-                raise
-            ib.cancelMktData(contract)
+            # Generic tick list: 100=opt_vol, 101=opt_OI, 106=IV, 236=shortable
+            _GENERIC_TICKS = "100,101,106,236"
+            use_delayed = getattr(args, "delayed", False)
+
+            async def _stream_and_cancel(market_data_type: int, wait_time: float):
+                """Request streaming data for wait_time seconds then cancel."""
+                ib.reqMarketDataType(market_data_type)
+                t = ib.reqMktData(contract, genericTickList=_GENERIC_TICKS,
+                                  snapshot=False, regulatorySnapshot=False)
+                try:
+                    await asyncio.sleep(wait_time)
+                except asyncio.CancelledError:
+                    raise
+                finally:
+                    ib.cancelMktData(contract)
+                return t
+
+            if use_delayed:
+                # Explicit delayed mode: skip live attempt
+                ticker = await _stream_and_cancel(3, MARKET_DATA_TIMEOUT)
+            else:
+                # Try live data first; fall back to delayed if all fields are null
+                half = MARKET_DATA_TIMEOUT / 2
+                ticker = await _stream_and_cancel(1, half)
+                if (_safe_float(ticker.bid) is None
+                        and _safe_float(ticker.ask) is None
+                        and _safe_float(ticker.last) is None):
+                    ticker = await _stream_and_cancel(3, half)
 
             return _build_snapshot(ticker, args, args.sec_type.upper(), data_type_ref[0])
     finally:
@@ -401,6 +420,11 @@ Examples:
     # Quantity for liquidity checks
     parser.add_argument("--quantity", type=float, default=None,
                         help="Proposed order size (enables order-size-as-%%ADV liquidity check)")
+
+    # Market data type
+    parser.add_argument("--delayed", action="store_true",
+                        help="Request delayed market data (type 3); skips live attempt. "
+                             "Use for paper accounts without live data subscriptions.")
 
     # Thresholds
     parser.add_argument("--stale-threshold", type=float, default=DEFAULT_STALE_THRESHOLD,

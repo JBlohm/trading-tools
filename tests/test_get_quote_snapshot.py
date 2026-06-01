@@ -830,3 +830,126 @@ class TestUnavailableFieldWarningCodes:
         with patch.object(mod, "_detect_session_state", return_value="regular"):
             result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, args))
         assert not any(w["code"] == "NO_SHORTABLE_SHARES" for w in result["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# NO_BID_ASK hard rejection (TRA-29)
+# ---------------------------------------------------------------------------
+
+class TestNoBidAskHardReject:
+    """Verify hard-reject when no bid/ask data is received (even after delayed fallback)."""
+
+    def setup_method(self):
+        # Ticker with no bid/ask/last — simulates all-null response
+        ticker = _make_ticker(bid=None, ask=None, last=None, time=None, halted=0)
+        mock_ib_class, _ = _make_mock_ib(ticker)
+        self.mod, _ = _inject_fake_ib_async(mock_ib_class)
+
+    def test_no_bid_ask_causes_hard_rejection(self):
+        result = asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        assert result["rejected"] is True
+        assert result["rejection_reason"] == "NO_BID_ASK"
+
+    def test_no_bid_ask_warning_emitted(self):
+        result = asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        assert any(w["code"] == "NO_BID_ASK" for w in result["warnings"])
+
+    def test_no_bid_ask_result_is_json_serialisable(self):
+        result = asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        json.dumps(result)
+
+    def test_valid_bid_ask_does_not_trigger_no_bid_ask_reject(self):
+        now = datetime.now(timezone.utc)
+        ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05, time=now, halted=0)
+        mock_ib_class, _ = _make_mock_ib(ticker)
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        assert result["rejection_reason"] != "NO_BID_ASK"
+        assert not any(w["code"] == "NO_BID_ASK" for w in result["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# Delayed data fallback (TRA-29)
+# ---------------------------------------------------------------------------
+
+class TestDelayedDataFallback:
+    """Verify reqMarketDataType(3) fallback and --delayed flag behavior."""
+
+    def _make_mock_ib_with_call_tracking(self, live_ticker, delayed_ticker):
+        """Return a mock IB that returns live_ticker on first reqMktData, delayed_ticker on second."""
+        mock_ib_class = MagicMock()
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        call_count = [0]
+
+        def req_mkt_data(*a, **kw):
+            call_count[0] += 1
+            return live_ticker if call_count[0] == 1 else delayed_ticker
+
+        mock_instance.reqMktData = MagicMock(side_effect=req_mkt_data)
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.client = MagicMock()
+        mock_instance.reqMarketDataType = MagicMock()
+        mock_ib_class.return_value = mock_instance
+        return mock_ib_class, mock_instance
+
+    def test_fallback_to_delayed_when_live_returns_all_null(self):
+        now = datetime.now(timezone.utc)
+        live_ticker = _make_ticker(bid=None, ask=None, last=None, time=None, halted=0)
+        delayed_ticker = _make_ticker(bid=150.0, ask=150.10, last=150.05, time=now, halted=0)
+        mock_ib_class, mock_instance = self._make_mock_ib_with_call_tracking(
+            live_ticker, delayed_ticker)
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        # Should have fallen back to delayed and returned valid data
+        assert result["quote"]["bid"] == pytest.approx(150.0)
+        assert result["rejected"] is False
+
+    def test_no_fallback_when_live_returns_data(self):
+        now = datetime.now(timezone.utc)
+        live_ticker = _make_ticker(bid=200.0, ask=200.10, last=200.05, time=now, halted=0)
+        delayed_ticker = _make_ticker(bid=199.0, ask=199.10, last=199.05, time=now, halted=0)
+        mock_ib_class, mock_instance = self._make_mock_ib_with_call_tracking(
+            live_ticker, delayed_ticker)
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        # Should use live data, not delayed
+        assert result["quote"]["bid"] == pytest.approx(200.0)
+        # reqMktData should only have been called once (live attempt only)
+        assert mock_instance.reqMktData.call_count == 1
+
+    def test_delayed_flag_skips_live_attempt(self):
+        now = datetime.now(timezone.utc)
+        delayed_ticker = _make_ticker(bid=155.0, ask=155.10, last=155.05, time=now, halted=0)
+        # Use simple mock: with --delayed, only one reqMktData call expected
+        mock_ib_class, mock_instance = _make_mock_ib(delayed_ticker)
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        args = _make_args(delayed=True)
+        result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, args))
+        # With --delayed, only one reqMktData call (directly to delayed type 3)
+        assert mock_instance.reqMktData.call_count == 1
+        assert result["quote"]["bid"] == pytest.approx(155.0)
+
+    def test_reqMarketDataType_called_with_type_3_on_fallback(self):
+        live_ticker = _make_ticker(bid=None, ask=None, last=None, time=None, halted=0)
+        now = datetime.now(timezone.utc)
+        delayed_ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05, time=now, halted=0)
+        mock_ib_class, mock_instance = self._make_mock_ib_with_call_tracking(
+            live_ticker, delayed_ticker)
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        # reqMarketDataType must be called with 3 at some point during fallback
+        calls = [c.args[0] for c in mock_instance.reqMarketDataType.call_args_list]
+        assert 3 in calls
+
+    def test_streaming_mode_used_not_snapshot(self):
+        now = datetime.now(timezone.utc)
+        ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05, time=now, halted=0)
+        mock_ib_class, mock_instance = _make_mock_ib(ticker)
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        # snapshot=False must be used (streaming mode)
+        call_kwargs = mock_instance.reqMktData.call_args_list[0]
+        assert call_kwargs.kwargs.get("snapshot") is False or call_kwargs.args[2:3] == (False,)
