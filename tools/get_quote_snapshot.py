@@ -332,13 +332,23 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
     try:
         with contextlib.redirect_stdout(sys.stderr):
             contract = _build_contract(args)
-            await ib.qualifyContractsAsync(contract)
+            qualified = await ib.qualifyContractsAsync(contract)
+            if not qualified or qualified[0] is None:
+                raise ValueError(
+                    f"Contract not found in IB system: {args.symbol} {args.sec_type}"
+                    + (f" {args.expiry} {args.strike} {args.right}" if args.sec_type.upper() in ("OPT", "FOP") else "")
+                    + " — IB Error 200. For paper accounts check options market data API permissions in IB Client Portal."
+                )
+
+            # Request delayed data (type 3) so paper accounts without live
+            # subscriptions return actual quotes instead of all-null snapshots.
+            ib.reqMarketDataType(3)
 
             # Generic tick list: 100=opt_vol, 101=opt_OI, 106=IV, 236=shortable
             ticker = ib.reqMktData(
                 contract,
                 genericTickList="100,101,106,236",
-                snapshot=True,
+                snapshot=False,
                 regulatorySnapshot=False,
             )
 
@@ -427,6 +437,16 @@ def main() -> None:
                 "error": str(exc),
                 "status": "tws_unavailable",
                 "hint": "The TWS API is temporarily not available. Please try again later.",
+                "timestamp": utc_timestamp(),
+            }),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except ValueError as exc:
+        print(
+            json.dumps({
+                "error": str(exc),
+                "status": "contract_not_found",
                 "timestamp": utc_timestamp(),
             }),
             file=sys.stderr,
