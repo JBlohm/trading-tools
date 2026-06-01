@@ -30,7 +30,12 @@
       "tool": "cancel_order.py",
       "description": "Cancels an existing open order in TWS",
       "read_only": false
+    },
+    "1006": {
+      "tool": "get_quote_snapshot.py",
+      "description": "Pre-trade quote, session state, and liquidity snapshot from TWS",
+      "read_only": true
     }
   },
-  "next_available": 1006
+  "next_available": 1007
 }
