@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-place_order.py — Place an order via Interactive Brokers TWS with a risk pre-check.
+place_order.py — Place an order via Interactive Brokers TWS with a structured risk pre-check gate.
 
-Risk pre-check gate (all must pass before the order is submitted):
-  1. Estimated notional value ≤ --max-notional (default 100,000 USD)
-  2. Order value ≤ --max-pct-nlv % of Net Liquidation Value (default 10%)
-  3. Excess liquidity > 0 (account is not margin-called)
+Before any order is submitted, a full pre-trade risk gate (pretrade_risk_check.run_check) is
+executed against portfolio state and configured risk limits.  The order is rejected with
+machine-readable reason codes unless ALL checks pass (or --simulation mode is set).
 
 Returns the placed order details as JSON to stdout, or an error JSON to stderr.
 
 Usage:
     python place_order.py --symbol AAPL --action BUY --quantity 10 --order-type MKT [options]
     python place_order.py --symbol AAPL --action BUY --quantity 10 --order-type LMT --limit-price 170.00 [options]
+    python place_order.py --symbol AAPL --action BUY --quantity 10 --order-type MKT --simulation
 
 Connection ID: 1004 (see tools/connection_ids.json)
 """
@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import io
 import json
+import pathlib
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -38,6 +39,9 @@ except ImportError:
         file=sys.stderr,
     )
     sys.exit(1)
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+from tools.pretrade_risk_check import run_check as _run_risk_check, load_limits as _load_limits
 
 DEFAULT_HOST = "192.168.2.187"
 PORT_PAPER = 7497
@@ -272,6 +276,7 @@ async def place_order(
     port: int,
     client_id: int,
     args: argparse.Namespace,
+    simulation: bool = False,
 ) -> dict:
     audit_id = str(uuid.uuid4())
 
@@ -288,64 +293,44 @@ async def place_order(
         raise ConnectionError(f"Cannot reach TWS at {host}:{port} — {exc}") from exc
 
     try:
-        # Redirect stdout → stderr so any IB API warning prints don't pollute our JSON stdout
         with contextlib.redirect_stdout(sys.stderr):
             contract = _build_contract(args)
             await ib.qualifyContractsAsync(contract)
-
             order = _build_order(args)
 
-            # --- Risk pre-check ---
-            nlv, excess_liquidity = await _get_nlv_and_excess(ib)
-
-            # Estimate notional: use limit price if available, else last market price
-            ref_price = args.limit_price or 0.0
-            if ref_price == 0.0:
-                ticker = ib.reqMktData(contract, snapshot=True)
-                try:
-                    await asyncio.sleep(3)
-                except asyncio.CancelledError:
-                    raise
-                ref_price = ticker.last or ticker.close or 0.0
-                ib.cancelMktData(contract)
-
-            estimated_notional = ref_price * args.quantity
-
-            risk_check = {
-                "nlv": nlv,
-                "excess_liquidity": excess_liquidity,
-                "estimated_notional": estimated_notional,
-                "max_notional_limit": args.max_notional,
-                "max_pct_nlv": args.max_pct_nlv,
-                "passed": False,
-                "failures": [],
+            # --- Structured pre-trade risk gate ---
+            order_dict = {
+                "symbol": args.symbol,
+                "sec_type": args.sec_type,
+                "action": args.action,
+                "quantity": args.quantity,
+                "order_type": args.order_type,
+                "limit_price": args.limit_price,
+                "tif": args.tif,
+                "currency": args.currency,
+                "exchange": args.exchange or "SMART",
+                "expiry": getattr(args, "expiry", None),
+                "strike": getattr(args, "strike", None),
+                "right": getattr(args, "right", None),
+                "stop_price": getattr(args, "stop_price", None),
             }
 
-            if estimated_notional > args.max_notional:
-                risk_check["failures"].append(
-                    f"Estimated notional {estimated_notional:,.2f} exceeds limit {args.max_notional:,.2f}"
-                )
+            try:
+                limits = _load_limits()
+            except (FileNotFoundError, json.JSONDecodeError):
+                limits = {}
 
-            if nlv > 0 and estimated_notional > (nlv * args.max_pct_nlv / 100.0):
-                risk_check["failures"].append(
-                    f"Estimated notional {estimated_notional:,.2f} exceeds {args.max_pct_nlv}% of NLV ({nlv:,.2f})"
-                )
+            risk_result = await _run_risk_check(ib, order_dict, limits)
 
-            if excess_liquidity <= 0:
-                risk_check["failures"].append(
-                    f"Excess liquidity is {excess_liquidity:,.2f} — account may be margin-called"
-                )
-
-            if risk_check["failures"]:
-                risk_check["passed"] = False
+            if risk_result["verdict"] != "pass" and not simulation:
                 return {
                     "audit_id": audit_id,
                     "timestamp": utc_timestamp(),
                     "status": "risk_check_failed",
-                    "risk_check": risk_check,
+                    "verdict": risk_result["verdict"],
+                    "failures": risk_result["failures"],
+                    "risk_gate": risk_result,
                 }
-
-            risk_check["passed"] = True
 
             submission_ts = utc_timestamp()
             try:
@@ -357,7 +342,7 @@ async def place_order(
                 margin_snapshot = await _fetch_margin_snapshot(ib)
 
                 return _trade_to_dict(
-                    trade, risk_check, audit_id, submission_ts,
+                    trade, risk_result, audit_id, submission_ts,
                     position_snapshot, margin_snapshot,
                 )
             except (ConnectionError, ValueError):
@@ -369,7 +354,7 @@ async def place_order(
                     "timestamp": utc_timestamp(),
                     "status": "broker_error",
                     "error": str(exc),
-                    "risk_check": risk_check,
+                    "risk_check": risk_result,
                 }
     finally:
         ib.disconnect()
@@ -377,14 +362,14 @@ async def place_order(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Place an order via Interactive Brokers TWS with risk pre-check.",
+        description="Place an order via Interactive Brokers TWS with structured pre-trade risk gate.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python place_order.py --symbol AAPL --action BUY --quantity 10 --order-type MKT
   python place_order.py --symbol AAPL --action SELL --quantity 5 --order-type LMT --limit-price 180.00
   python place_order.py --symbol AAPL --action BUY --quantity 10 --order-type MKT --live
-  python place_order.py --symbol SPY --action BUY --quantity 100 --order-type MKT --max-notional 50000
+  python place_order.py --symbol SPY --action BUY --quantity 100 --order-type MKT --simulation
         """,
     )
     # Connection
@@ -418,12 +403,12 @@ Examples:
     parser.add_argument("--tif", default="DAY",
                         choices=["DAY", "GTC", "IOC", "FOK"],
                         help="Time in force (default: DAY)")
+    parser.add_argument("--stop-price", type=float, dest="stop_price",
+                        help="Stop-loss price for max-loss estimation")
 
-    # Risk limits
-    parser.add_argument("--max-notional", type=float, default=DEFAULT_MAX_NOTIONAL,
-                        help=f"Max order notional value in USD (default: {DEFAULT_MAX_NOTIONAL:,.0f})")
-    parser.add_argument("--max-pct-nlv", type=float, default=DEFAULT_MAX_PCT_NLV,
-                        help=f"Max order size as %% of NLV (default: {DEFAULT_MAX_PCT_NLV})")
+    # Risk gate
+    parser.add_argument("--simulation", action="store_true",
+                        help="Simulation/test mode: bypass risk gate failures and place the order anyway")
 
     return parser.parse_args()
 
@@ -432,7 +417,8 @@ def main() -> None:
     args = parse_args()
 
     try:
-        result = asyncio.run(place_order(args.host, args.port, CLIENT_ID, args))
+        result = asyncio.run(place_order(args.host, args.port, CLIENT_ID, args,
+                                         simulation=args.simulation))
     except ConnectionError as exc:
         print(
             json.dumps(
