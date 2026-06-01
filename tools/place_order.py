@@ -22,6 +22,7 @@ import contextlib
 import io
 import json
 import sys
+import uuid
 from datetime import datetime, timezone
 
 try:
@@ -48,9 +49,22 @@ DEFAULT_MAX_NOTIONAL = 100_000.0
 DEFAULT_MAX_PCT_NLV = 10.0
 IB_UNSET_PRICE = 1.7976931348623157e308
 
+_REJECTED_STATUSES = frozenset({"Inactive", "ApiCancelled", "ApiRejected"})
+_MARGIN_TAGS = frozenset({"NetLiquidation", "ExcessLiquidity", "BuyingPower", "InitMarginReq", "MaintMarginReq"})
+
 
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _fill_status(filled: float, total: float, ib_status: str) -> str:
+    if ib_status in _REJECTED_STATUSES:
+        return "rejected"
+    if filled >= total > 0:
+        return "filled"
+    if filled > 0:
+        return "partial_fill"
+    return "open"
 
 
 def _build_contract(args: argparse.Namespace) -> Contract:
@@ -96,14 +110,49 @@ def _build_order(args: argparse.Namespace):
         raise ValueError(f"Unsupported order type: {order_type}. Use MKT or LMT.")
 
 
-def _trade_to_dict(trade, risk_check: dict) -> dict:
+def _trade_to_dict(
+    trade,
+    risk_check: dict,
+    audit_id: str,
+    submission_ts: str,
+    position_snapshot: dict,
+    margin_snapshot: dict,
+) -> dict:
     contract = trade.contract
     order = trade.order
     status = trade.orderStatus
+    fills = getattr(trade, "fills", [])
+
+    ib_status = status.status
+    accepted = ib_status not in _REJECTED_STATUSES
+    rejection_reason = (
+        getattr(status, "whyHeld", None) or ib_status if not accepted else None
+    )
+
+    filled = float(getattr(status, "filled", 0.0) or 0.0)
+    remaining = float(getattr(status, "remaining", order.totalQuantity) or order.totalQuantity)
+    avg_fill_price_raw = float(getattr(status, "avgFillPrice", 0.0) or 0.0)
+    avg_fill_price = avg_fill_price_raw if avg_fill_price_raw > 0 else None
+
+    total_commission = None
+    if fills:
+        try:
+            commissions = [
+                f.commissionReport.commission
+                for f in fills
+                if getattr(f, "commissionReport", None) is not None
+            ]
+            if commissions:
+                total_commission = sum(commissions)
+        except Exception:
+            pass
+
     return {
-        "timestamp": utc_timestamp(),
-        "order_id": order.orderId,
-        "perm_id": order.permId,
+        "audit_id": audit_id,
+        "submission_timestamp": submission_ts,
+        "broker_ack_timestamp": utc_timestamp(),
+        "client_order_id": order.orderId,
+        "broker_order_id": order.permId,
         "symbol": contract.symbol,
         "sec_type": contract.secType,
         "currency": contract.currency,
@@ -113,7 +162,20 @@ def _trade_to_dict(trade, risk_check: dict) -> dict:
         "quantity": order.totalQuantity,
         "lmt_price": order.lmtPrice if order.lmtPrice != IB_UNSET_PRICE else None,
         "tif": order.tif,
-        "status": status.status,
+        "accepted": accepted,
+        "rejection_reason": rejection_reason,
+        "ib_order_status": ib_status,
+        "fill_status": _fill_status(filled, float(order.totalQuantity), ib_status),
+        "filled_quantity": filled,
+        "remaining_quantity": remaining,
+        "average_fill_price": avg_fill_price,
+        "commission": total_commission,
+        "commission_note": (
+            None if total_commission is not None
+            else "unavailable at placement time; query fills after settlement"
+        ),
+        "position_snapshot": position_snapshot,
+        "margin_snapshot": margin_snapshot,
         "risk_check": risk_check,
     }
 
@@ -143,12 +205,75 @@ async def _get_nlv_and_excess(ib: IB) -> tuple[float, float]:
         return 0.0, 0.0
 
 
+async def _fetch_position_snapshot(ib: IB, symbol: str) -> dict:
+    """Return post-trade portfolio positions, filtered to the traded symbol when available."""
+    try:
+        portfolio = ib.portfolio()
+        positions = []
+        for item in portfolio:
+            c = item.contract
+            positions.append({
+                "symbol": c.symbol,
+                "sec_type": c.secType,
+                "con_id": c.conId,
+                "position": item.position,
+                "market_price": item.marketPrice,
+                "market_value": item.marketValue,
+                "average_cost": item.averageCost,
+                "unrealized_pnl": item.unrealizedPNL,
+                "realized_pnl": item.realizedPNL,
+                "account": item.account,
+            })
+        symbol_positions = [p for p in positions if p["symbol"] == symbol]
+        return {
+            "available": True,
+            "positions": symbol_positions if symbol_positions else positions,
+            "timestamp": utc_timestamp(),
+        }
+    except Exception as exc:
+        return {"available": False, "reason": str(exc)}
+
+
+async def _fetch_margin_snapshot(ib: IB) -> dict:
+    """Return post-trade margin and buying power snapshot."""
+    try:
+        summary = await asyncio.wait_for(
+            ib.accountSummaryAsync(),
+            timeout=ACCOUNT_DATA_TIMEOUT,
+        )
+        accounts: dict[str, dict] = {}
+        for item in summary:
+            if item.tag not in _MARGIN_TAGS:
+                continue
+            if item.account not in accounts:
+                accounts[item.account] = {}
+            try:
+                accounts[item.account][item.tag] = float(item.value)
+            except (ValueError, TypeError):
+                pass
+        result = {
+            acct: {
+                "nlv": vals.get("NetLiquidation"),
+                "excess_liquidity": vals.get("ExcessLiquidity"),
+                "buying_power": vals.get("BuyingPower"),
+                "init_margin_req": vals.get("InitMarginReq"),
+                "maint_margin_req": vals.get("MaintMarginReq"),
+            }
+            for acct, vals in accounts.items()
+        }
+        return {"available": True, "accounts": result, "timestamp": utc_timestamp()}
+    except (asyncio.TimeoutError, Exception) as exc:
+        return {"available": False, "reason": str(exc)}
+
+
 async def place_order(
     host: str,
     port: int,
     client_id: int,
     args: argparse.Namespace,
 ) -> dict:
+    audit_id = str(uuid.uuid4())
+
     ib = IB()
     try:
         with contextlib.redirect_stderr(io.StringIO()):
@@ -213,6 +338,7 @@ async def place_order(
             if risk_check["failures"]:
                 risk_check["passed"] = False
                 return {
+                    "audit_id": audit_id,
                     "timestamp": utc_timestamp(),
                     "status": "risk_check_failed",
                     "risk_check": risk_check,
@@ -220,11 +346,30 @@ async def place_order(
 
             risk_check["passed"] = True
 
-            trade = ib.placeOrder(contract, order)
-            # Give TWS a moment to acknowledge
-            await asyncio.sleep(0.5)
+            submission_ts = utc_timestamp()
+            try:
+                trade = ib.placeOrder(contract, order)
+                # Give TWS a moment to acknowledge
+                await asyncio.sleep(0.5)
 
-            return _trade_to_dict(trade, risk_check)
+                position_snapshot = await _fetch_position_snapshot(ib, args.symbol)
+                margin_snapshot = await _fetch_margin_snapshot(ib)
+
+                return _trade_to_dict(
+                    trade, risk_check, audit_id, submission_ts,
+                    position_snapshot, margin_snapshot,
+                )
+            except (ConnectionError, ValueError):
+                raise
+            except Exception as exc:
+                return {
+                    "audit_id": audit_id,
+                    "submission_timestamp": submission_ts,
+                    "timestamp": utc_timestamp(),
+                    "status": "broker_error",
+                    "error": str(exc),
+                    "risk_check": risk_check,
+                }
     finally:
         ib.disconnect()
 
@@ -325,7 +470,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    if result.get("status") == "risk_check_failed":
+    if result.get("status") in ("risk_check_failed", "broker_error"):
         print(json.dumps(result, indent=2), file=sys.stderr)
         sys.exit(2)
 
