@@ -478,3 +478,71 @@ class TestRunCheck:
         result = asyncio.run(MOD.run_check(ib, _order(quantity=200.0, limit_price=100.0), limits))
         codes = [f["reason_code"] for f in result["failures"]]
         assert "ERR_OPEN_ORDER_STACKING" in codes
+
+    def test_stress_failure_is_hard_failure_not_warning(self):
+        # Large notional relative to NLV → equity shock breaches 15% stress limit
+        # NLV=100k, order 500 shares @ 30 = 15k notional, shock 10% → loss 1500 = 1.5% → pass
+        # To breach: order 700 shares @ 100 = 70k, shock 10% → loss 7k = 7% < 15% still pass
+        # Use very small NLV: nlv=10k, order 5 * 100 = 500, shock 10% → 50/10k = 0.5% pass
+        # To breach: nlv=10k, excess=5k, order 500*100=50k, shock 10% → loss 5k = 50% > 15% → fail
+        ib = _build_mock_ib(nlv=10_000, excess=5_000, bid=100.0, ask=101.0, last=100.0, close=100.0)
+        limits = {"limits": _lim(
+            max_order_notional_usd=500_000,
+            max_order_pct_nlv=500.0,
+            max_single_name_pct_nlv=500.0,
+            max_asset_class_pct_nlv=500.0,
+            min_excess_liquidity_usd=0,
+            margin_cushion_pct=0.0,
+            max_open_order_exposure_pct_nlv=500.0,
+            stress_loss_limit_pct_nlv=15.0,
+            stress_scenarios={"equity_shock_pct": [-10]},
+        )}
+        result = asyncio.run(MOD.run_check(ib, _order(quantity=500.0, limit_price=100.0), limits))
+        # Stress loss: 500*100*10/100 = 5000; 5000/10000 = 50% > 15% → hard failure
+        assert result["verdict"] == "fail"
+        codes = [f["reason_code"] for f in result["failures"]]
+        assert "ERR_STRESS_LOSS" in codes
+        # Must NOT appear as a warning — it is a hard failure
+        warning_codes = [w.get("code") for w in result["warnings"]]
+        assert "WARN_STRESS_LOSS" not in warning_codes
+
+    def test_margin_cushion_uses_projected_not_current(self):
+        # Current excess = 15k (just above floor 10k, 7.5% of 200k < 15% limit → would pass current)
+        # STK BUY 50k notional → margin_rate=0.25 → additional=12.5k → excess_after=2.5k < 10k floor
+        account = _account(nlv=200_000, excess=15_000)
+        margin_impact = {
+            "estimated_additional_margin": 12_500.0,
+            "excess_liquidity_before": 15_000.0,
+            "excess_liquidity_after": 2_500.0,
+        }
+        results = MOD._check_margin_cushion(account, _lim(), margin_impact)
+        codes = [r.get("reason_code") for r in results]
+        # Projected excess 2.5k < floor 10k → ERR_EXCESS_LIQUIDITY
+        assert "ERR_EXCESS_LIQUIDITY" in codes
+
+    def test_stop_risk_computed_when_stop_price_provided(self):
+        order = _order(quantity=10.0, limit_price=100.0)
+        order["stop_price"] = 90.0  # BUY at 100, stop at 90 → risk 10/share
+        sr = MOD._compute_stop_risk(order, ref_price=100.0, nlv=200_000.0)
+        assert sr is not None
+        assert sr["estimated_max_loss"] == pytest.approx(100.0)  # 10 shares * 10/share
+        assert sr["pct_nlv"] == pytest.approx(0.05)  # 100/200000 * 100
+
+    def test_stop_risk_is_none_without_stop_price(self):
+        order = _order(quantity=10.0, limit_price=100.0)
+        sr = MOD._compute_stop_risk(order, ref_price=100.0, nlv=200_000.0)
+        assert sr is None
+
+    def test_asset_class_concentration_passes(self):
+        # equities: order 10*100=1000; 1000/200000=0.5% < 70% → pass
+        r = MOD._check_asset_class_concentration([], _order(), 100.0, 200_000.0, _lim())
+        assert r["status"] == "pass"
+
+    def test_asset_class_concentration_options_breach(self):
+        # max_options_pct_nlv=30%; order 50 OPT contracts * 100 multiplier * 100 price = 500k
+        # on nlv=200k → 250% > 30% → fail
+        order = _order(quantity=50.0, limit_price=100.0)
+        order["sec_type"] = "OPT"
+        r = MOD._check_asset_class_concentration([], order, 100.0, 200_000.0, _lim(max_options_pct_nlv=30.0))
+        assert r["status"] == "fail"
+        assert r["reason_code"] == "ERR_ASSET_CLASS_CONCENTRATION"

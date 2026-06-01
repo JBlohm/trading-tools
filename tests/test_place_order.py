@@ -251,7 +251,7 @@ class TestRiskGateIntegration:
             result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         mock_ib.placeOrder.assert_called_once()
         assert result.get("status") != "risk_check_failed"
-        assert "risk_gate" in result
+        assert "risk_check" in result
 
     def test_rejects_order_when_risk_gate_fails(self):
         mock_ib = self._setup_mock_ib()
@@ -332,13 +332,22 @@ class TestRiskCheckLogicPortfolioCompat:
         mock_instance = MagicMock()
         mock_instance.connectAsync = AsyncMock()
         mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
         mock_instance.placeOrder = MagicMock(return_value=_make_trade())
         summary = [
             _make_account_value("DU", "NetLiquidation", str(nlv)),
             _make_account_value("DU", "ExcessLiquidity", str(excess)),
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
-        mock_instance.reqMktData.return_value = MagicMock(last=0.0, close=0.0)
+        ticker = MagicMock()
+        ticker.bid = None
+        ticker.ask = None
+        ticker.last = 0.0
+        ticker.close = 0.0
+        ticker.time = None
+        ticker.modelGreeks = None
+        ticker.lastGreeks = None
+        mock_instance.reqMktData.return_value = ticker
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
         mock_instance.portfolio.return_value = []
@@ -393,7 +402,16 @@ class TestPostExecutionConfirmation:
             _make_account_value("DU", "MaintMarginReq", "8000"),
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
-        mock_instance.reqMktData.return_value = MagicMock(last=0.0, close=0.0)
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
+        ticker = MagicMock()
+        ticker.bid = None
+        ticker.ask = None
+        ticker.last = 0.0
+        ticker.close = 0.0
+        ticker.time = None
+        ticker.modelGreeks = None
+        ticker.lastGreeks = None
+        mock_instance.reqMktData.return_value = ticker
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
         mock_instance.portfolio.return_value = portfolio_items if portfolio_items is not None else []
@@ -538,10 +556,14 @@ class TestPostExecutionConfirmation:
 
     def test_position_snapshot_available_false_on_error(self):
         mock_ib = self._setup_mock_ib()
-        mock_ib.portfolio.side_effect = RuntimeError("portfolio unavailable")
         args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
                           max_notional=100_000, max_pct_nlv=10.0)
-        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        # Patch _run_risk_check to pass so execution reaches _fetch_position_snapshot;
+        # then set portfolio.side_effect so _fetch_position_snapshot gets the error.
+        with patch("tools.place_order._run_risk_check", new=AsyncMock(return_value=_pass_risk_result())), \
+             patch("tools.place_order._load_limits", return_value={}):
+            mock_ib.portfolio.side_effect = RuntimeError("portfolio unavailable")
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         assert result["position_snapshot"]["available"] is False
 
     def test_margin_snapshot_returned(self):
