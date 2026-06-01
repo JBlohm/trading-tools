@@ -145,6 +145,7 @@ def _make_args(**kwargs):
         "tif": "DAY",
         "max_notional": 100_000.0,
         "max_pct_nlv": 10.0,
+        "allow_no_data": False,
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -670,3 +671,117 @@ class TestPreTradeSnapshotIntegration:
         result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         # ref_price = last = 100.0, estimated_notional = 10 * 100.0 = 1000 < 100,000
         assert result.get("status") != "risk_check_failed" or "snapshot" in str(result)
+
+
+# ---------------------------------------------------------------------------
+# All-null snapshot risk gate (TRA-32)
+# ---------------------------------------------------------------------------
+
+class TestAllNullSnapshotRiskGate:
+    """Risk gate must block orders when all price data is null during regular session."""
+
+    def setup_method(self):
+        self.mock_ib_class = MagicMock()
+        self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
+
+    def _setup_mock_ib(self, nlv=500_000.0, excess=200_000.0, ticker_kwargs=None):
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.placeOrder = MagicMock(return_value=_make_trade())
+        summary = [
+            _make_account_value("DU", "NetLiquidation", str(nlv)),
+            _make_account_value("DU", "ExcessLiquidity", str(excess)),
+        ]
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
+        # All-null ticker: bid, ask, last, close all None
+        t = MagicMock()
+        t.bid = None
+        t.ask = None
+        t.last = None
+        t.close = None
+        t.halted = 0
+        t.time = None
+        t.volume = None
+        t.avVolume = None
+        if ticker_kwargs:
+            for k, v in ticker_kwargs.items():
+                setattr(t, k, v)
+        mock_instance.reqMktData.return_value = t
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.portfolio.return_value = []
+        self.mock_ib_class.return_value = mock_instance
+        return mock_instance
+
+    def test_all_null_regular_session_causes_risk_check_failed(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["status"] == "risk_check_failed"
+        assert any("NO_MARKET_DATA" in f for f in result["risk_check"]["failures"])
+
+    def test_all_null_regular_session_order_not_placed(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        mock_ib.placeOrder.assert_not_called()
+
+    def test_all_null_closed_session_not_rejected_for_no_market_data(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="closed"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        # Only risk_check_failed allowed here — but NOT for NO_MARKET_DATA
+        failures = result.get("risk_check", {}).get("failures", [])
+        assert not any("NO_MARKET_DATA" in f for f in failures)
+
+    def test_all_null_regular_with_allow_no_data_passes_snapshot_gate(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0, allow_no_data=True)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        # Should not fail for NO_MARKET_DATA (may still fail for other risk checks)
+        failures = result.get("risk_check", {}).get("failures", [])
+        assert not any("NO_MARKET_DATA" in f for f in failures)
+
+    def test_all_null_regular_with_allow_no_data_override_warning_in_snapshot(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0, allow_no_data=True)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        snap_warnings = result.get("quote_snapshot", {}).get("warnings", [])
+        assert any(w["code"] == "OVERRIDE_NO_DATA" for w in snap_warnings)
+
+    def test_allow_no_data_arg_parsed(self):
+        mod, _ = _inject_fake_ib_async()
+        with patch("sys.argv", ["place_order.py", "--symbol", "AAPL",
+                                "--action", "BUY", "--quantity", "1",
+                                "--order-type", "MKT", "--allow-no-data"]):
+            args = mod.parse_args()
+        assert args.allow_no_data is True
+
+    def test_allow_no_data_defaults_to_false(self):
+        mod, _ = _inject_fake_ib_async()
+        with patch("sys.argv", ["place_order.py", "--symbol", "AAPL",
+                                "--action", "BUY", "--quantity", "1",
+                                "--order-type", "MKT"]):
+            args = mod.parse_args()
+        assert args.allow_no_data is False
+
+    def test_partial_data_regular_session_not_blocked_for_no_market_data(self):
+        # If last price is available, not a total blackout → no NO_MARKET_DATA block
+        self._setup_mock_ib(ticker_kwargs={"last": 100.0, "close": 99.0})
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        failures = result.get("risk_check", {}).get("failures", [])
+        assert not any("NO_MARKET_DATA" in f for f in failures)
