@@ -50,7 +50,17 @@
       "tool": "get_quote_snapshot.py",
       "description": "Pre-trade quote, session state, and liquidity snapshot from TWS",
       "read_only": true
+    },
+    "1010": {
+      "tool": "modify_order.py",
+      "description": "Modifies existing open orders via native modify or cancel/replace",
+      "read_only": false
+    },
+    "1011": {
+      "tool": "get_order_status.py",
+      "description": "Polls lifecycle status, fill details, commissions, and event log for a specific order",
+      "read_only": true
     }
   },
-  "next_available": 1010
+  "next_available": 1012
 }

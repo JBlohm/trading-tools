@@ -64,6 +64,12 @@ def _trade_to_dict(trade) -> dict:
             }
         )
 
+    lmt_price = order.lmtPrice if order.lmtPrice != 1.7976931348623157e+308 else None
+    ref_price = lmt_price
+    price_source = "lmt_price" if ref_price is not None else "unknown"
+    remaining = status.remaining
+    estimated_notional = ref_price * remaining if ref_price is not None else None
+
     return {
         "order_id": order.orderId,
         "perm_id": order.permId,
@@ -78,16 +84,23 @@ def _trade_to_dict(trade) -> dict:
         "action": order.action,
         "order_type": order.orderType,
         "total_quantity": order.totalQuantity,
-        "lmt_price": order.lmtPrice if order.lmtPrice != 1.7976931348623157e+308 else None,
+        "lmt_price": lmt_price,
         "aux_price": order.auxPrice if order.auxPrice != 1.7976931348623157e+308 else None,
         "tif": order.tif,
         "account": order.account,
         "status": status.status,
         "filled": status.filled,
-        "remaining": status.remaining,
+        "remaining": remaining,
         "avg_fill_price": status.avgFillPrice if status.avgFillPrice else None,
         "why_held": status.whyHeld or None,
         "fills": fills,
+        "risk_impact": {
+            "remaining_qty": remaining,
+            "ref_price": ref_price,
+            "price_source": price_source,
+            "estimated_notional": estimated_notional,
+            "action": order.action,
+        },
     }
 
 

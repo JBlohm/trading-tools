@@ -182,6 +182,37 @@ class TestCancelOrder:
         result = asyncio.run(self.mod.cancel_order("127.0.0.1", 7497, 1005, order_id=42))
         assert result["timestamp"].endswith("Z")
 
+    def test_cancel_already_filled_returns_already_done(self):
+        """Cancel an already-filled order: idempotent — returns already_done, not error."""
+        filled_trade = _make_trade(
+            order=_make_order(orderId=55),
+            status=_make_order_status(status="Filled"),
+        )
+        mock_ib = self._setup_mock_ib(open_trades=[])
+        mock_ib.reqCompletedOrdersAsync = AsyncMock(return_value=[filled_trade])
+        result = asyncio.run(self.mod.cancel_order("127.0.0.1", 7497, 1005, order_id=55))
+        assert result["status"] == "already_done"
+        assert result["order_id"] == 55
+        assert result["final_order_status"] == "Filled"
+        mock_ib.cancelOrder.assert_not_called()
+
+    def test_cancel_already_cancelled_returns_already_done(self):
+        cancelled_trade = _make_trade(
+            order=_make_order(orderId=66),
+            status=_make_order_status(status="Cancelled"),
+        )
+        mock_ib = self._setup_mock_ib(open_trades=[])
+        mock_ib.reqCompletedOrdersAsync = AsyncMock(return_value=[cancelled_trade])
+        result = asyncio.run(self.mod.cancel_order("127.0.0.1", 7497, 1005, order_id=66))
+        assert result["status"] == "already_done"
+        mock_ib.cancelOrder.assert_not_called()
+
+    def test_cancel_not_found_when_not_in_open_or_completed(self):
+        mock_ib = self._setup_mock_ib(open_trades=[])
+        mock_ib.reqCompletedOrdersAsync = AsyncMock(return_value=[])
+        result = asyncio.run(self.mod.cancel_order("127.0.0.1", 7497, 1005, order_id=999))
+        assert result["status"] == "not_found"
+
 
 class TestMain:
     def setup_method(self):
