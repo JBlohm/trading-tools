@@ -6,6 +6,9 @@ Iterates over all option positions in the portfolio, requests model Greeks for
 each, and returns aggregate portfolio delta/gamma/theta/vega as JSON to stdout.
 Non-option positions are included in the output with zero Greeks.
 
+Also returns bucketed Greeks grouped by underlying symbol and by expiry date,
+giving a breakdown of where risk is concentrated.
+
 Usage:
     python get_greeks.py [--host HOST] [--port PORT] [--paper] [--live]
 
@@ -67,6 +70,42 @@ def _scale_greeks(greeks_dict: dict, position: float) -> dict:
     return scaled
 
 
+def _empty_bucket() -> dict:
+    return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "position_count": 0}
+
+
+def _add_to_bucket(bucket: dict, scaled: dict) -> None:
+    for key in ("delta", "gamma", "theta", "vega"):
+        if scaled.get(key) is not None:
+            bucket[key] += scaled[key]
+    bucket["position_count"] += 1
+
+
+def _build_bucketed_greeks(positions_out: list, scaled_map: dict) -> dict:
+    """Return greeks bucketed by underlying symbol and by expiry."""
+    by_underlying: dict = {}
+    by_expiry: dict = {}
+
+    for pos in positions_out:
+        key = (pos["symbol"], pos["expiry"], pos["strike"], pos["right"])
+        scaled = scaled_map.get(key)
+        if scaled is None:
+            continue
+
+        sym = pos["symbol"]
+        expiry = pos["expiry"] or "no_expiry"
+
+        if sym not in by_underlying:
+            by_underlying[sym] = _empty_bucket()
+        _add_to_bucket(by_underlying[sym], scaled)
+
+        if expiry not in by_expiry:
+            by_expiry[expiry] = _empty_bucket()
+        _add_to_bucket(by_expiry[expiry], scaled)
+
+    return {"by_underlying": by_underlying, "by_expiry": by_expiry}
+
+
 async def fetch_greeks(host: str, port: int, client_id: int) -> dict:
     ib = IB()
     try:
@@ -87,6 +126,8 @@ async def fetch_greeks(host: str, port: int, client_id: int) -> dict:
         portfolio_gamma = 0.0
         portfolio_theta = 0.0
         portfolio_vega = 0.0
+        # Keyed by (symbol, expiry, strike, right) for bucketing lookup
+        scaled_map: dict = {}
 
         for item in portfolio:
             contract = item.contract
@@ -114,6 +155,12 @@ async def fetch_greeks(host: str, port: int, client_id: int) -> dict:
                 if scaled["vega"] is not None:
                     portfolio_vega += scaled["vega"]
 
+                expiry = getattr(contract, "lastTradeDateOrContractMonth", None)
+                strike = getattr(contract, "strike", None)
+                right = getattr(contract, "right", None)
+                bucket_key = (contract.symbol, expiry, strike, right)
+                scaled_map[bucket_key] = scaled
+
             positions_out.append(
                 {
                     "symbol": contract.symbol,
@@ -136,6 +183,7 @@ async def fetch_greeks(host: str, port: int, client_id: int) -> dict:
                 "theta": portfolio_theta,
                 "vega": portfolio_vega,
             },
+            "bucketed_greeks": _build_bucketed_greeks(positions_out, scaled_map),
             "positions": positions_out,
         }
     finally:
