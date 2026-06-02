@@ -785,3 +785,108 @@ class TestAllNullSnapshotRiskGate:
             result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         failures = result.get("risk_check", {}).get("failures", [])
         assert not any("NO_MARKET_DATA" in f for f in failures)
+
+
+# ---------------------------------------------------------------------------
+# Request shape (TRA-33): two-request pattern in _fetch_pre_trade_snapshot
+# ---------------------------------------------------------------------------
+
+class TestPreTradeSnapshotRequestShape:
+    """TRA-33: _fetch_pre_trade_snapshot must use snapshot=True/empty-ticklist for
+    core fields, then snapshot=False/165,236 for avVolume."""
+
+    def setup_method(self):
+        self.mock_ib_class = MagicMock()
+        self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
+
+    def _setup_mock_ib(self, nlv=500_000.0, excess=200_000.0, ticker_kwargs=None):
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.placeOrder = MagicMock(return_value=_make_trade())
+        summary = [
+            _make_account_value("DU", "NetLiquidation", str(nlv)),
+            _make_account_value("DU", "ExcessLiquidity", str(excess)),
+        ]
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
+        t_kwargs = {"last": 100.0, "close": 99.0, "bid": 99.95,
+                    "ask": 100.05, "halted": 0, "time": None,
+                    "avVolume": None, "volume": None}
+        if ticker_kwargs:
+            t_kwargs.update(ticker_kwargs)
+        mock_instance.reqMktData.return_value = MagicMock(**t_kwargs)
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.portfolio.return_value = []
+        self.mock_ib_class.return_value = mock_instance
+        return mock_instance
+
+    def test_reqMktData_called_twice(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert mock_ib.reqMktData.call_count == 2
+
+    def test_first_call_snapshot_true_empty_ticklist(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        first = mock_ib.reqMktData.call_args_list[0]
+        assert first.kwargs["snapshot"] is True
+        assert first.kwargs["genericTickList"] == ""
+
+    def test_second_call_snapshot_false_ticklist_165_236(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        second = mock_ib.reqMktData.call_args_list[1]
+        assert second.kwargs["snapshot"] is False
+        assert second.kwargs["genericTickList"] == "165,236"
+
+    def test_adv_from_aux_ticker_when_different_objects(self):
+        """When ib_async returns distinct ticker objects, avVolume is copied from aux."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+
+        core_t = MagicMock()
+        core_t.bid = 99.95
+        core_t.ask = 100.05
+        core_t.last = 100.0
+        core_t.close = 99.0
+        core_t.halted = 0
+        core_t.time = None
+        core_t.avVolume = None
+        core_t.volume = None
+
+        aux_t = MagicMock()
+        aux_t.bid = 99.95
+        aux_t.ask = 100.05
+        aux_t.last = 100.0
+        aux_t.halted = 0
+        aux_t.time = None
+        aux_t.avVolume = 50_000_000.0
+
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.placeOrder = MagicMock(return_value=_make_trade())
+        summary = [
+            _make_account_value("DU", "NetLiquidation", "500000"),
+            _make_account_value("DU", "ExcessLiquidity", "200000"),
+        ]
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
+        mock_instance.reqMktData = MagicMock(side_effect=[core_t, aux_t])
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.portfolio.return_value = []
+        self.mock_ib_class.return_value = mock_instance
+
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        snap = result.get("quote_snapshot", {})
+        assert snap.get("liquidity", {}).get("adv") == pytest.approx(50_000_000.0)
+        assert not any(w["code"] == "NO_ADV" for w in snap.get("warnings", []))

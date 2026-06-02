@@ -902,3 +902,85 @@ class TestAllNullSnapshot:
         with patch("sys.argv", ["get_quote_snapshot.py", "--symbol", "AAPL"]):
             args = mod.parse_args()
         assert args.allow_no_data is False
+
+
+# ---------------------------------------------------------------------------
+# Request shape (TRA-33): two-request pattern
+# ---------------------------------------------------------------------------
+
+class TestRequestShape:
+    """TRA-33: reqMktData must use snapshot=True/empty-ticklist for core fields,
+    then snapshot=False/165,236 for avVolume + shortable shares."""
+
+    def setup_method(self):
+        now = datetime.now(timezone.utc)
+        ticker = _make_ticker(
+            bid=173.50, ask=173.52, last=173.51,
+            bidSize=100, askSize=200,
+            volume=45_000_000, avVolume=78_000_000,
+            close=172.00, time=now, halted=0,
+        )
+        mock_ib_class, self.mock_instance = _make_mock_ib(ticker)
+        self.mod, _ = _inject_fake_ib_async(mock_ib_class)
+
+    def test_reqMktData_called_twice(self):
+        asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        assert self.mock_instance.reqMktData.call_count == 2
+
+    def test_first_call_snapshot_true_empty_ticklist(self):
+        asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        first = self.mock_instance.reqMktData.call_args_list[0]
+        assert first.kwargs["snapshot"] is True
+        assert first.kwargs["genericTickList"] == ""
+
+    def test_second_call_snapshot_false_ticklist_165_236(self):
+        asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        second = self.mock_instance.reqMktData.call_args_list[1]
+        assert second.kwargs["snapshot"] is False
+        assert second.kwargs["genericTickList"] == "165,236"
+
+    def test_adv_from_aux_ticker_when_different_objects(self):
+        """When ib_async returns distinct ticker objects, avVolume must be copied from aux."""
+        now = datetime.now(timezone.utc)
+        core_ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05,
+                                   time=now, avVolume=None, halted=0)
+        aux_ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05,
+                                  time=now, avVolume=55_000_000, halted=0)
+
+        mock_ib_class = MagicMock()
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.reqMktData = MagicMock(side_effect=[core_ticker, aux_ticker])
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.client = MagicMock()
+        mock_ib_class.return_value = mock_instance
+
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        assert result["liquidity"]["adv"] == pytest.approx(55_000_000)
+        assert not any(w["code"] == "NO_ADV" for w in result["warnings"])
+
+    def test_shortable_shares_from_aux_ticker_when_different_objects(self):
+        """shortableShares must be copied from aux ticker when distinct objects returned."""
+        now = datetime.now(timezone.utc)
+        core_ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05,
+                                   time=now, shortableShares=None, halted=0)
+        aux_ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05,
+                                  time=now, shortableShares=2_000_000, halted=0)
+
+        mock_ib_class = MagicMock()
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.reqMktData = MagicMock(side_effect=[core_ticker, aux_ticker])
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.client = MagicMock()
+        mock_ib_class.return_value = mock_instance
+
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        assert result["liquidity"]["shortable_shares"] == pytest.approx(2_000_000)
+        assert not any(w["code"] == "NO_SHORTABLE_SHARES" for w in result["warnings"])

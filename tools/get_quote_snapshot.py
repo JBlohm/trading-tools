@@ -358,14 +358,6 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
             # subscriptions return actual quotes instead of all-null snapshots.
             ib.reqMarketDataType(3)
 
-            # Generic tick list: 100=opt_vol, 101=opt_OI, 106=IV, 236=shortable
-            ticker = ib.reqMktData(
-                contract,
-                genericTickList="100,101,106,236",
-                snapshot=False,
-                regulatorySnapshot=False,
-            )
-
             # Track data type reported by TWS for source labeling
             data_type_ref = [1]
 
@@ -377,11 +369,39 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
             except AttributeError:
                 pass  # older ib_async versions; data_type stays 1 (live)
 
+            # Request 1: snapshot=True, empty genericTickList → core price fields
+            # (bid, ask, last, close, volume, quote_time).
+            # snapshot=True + any non-empty genericTickList returns all-null against paper TWS.
+            ticker = ib.reqMktData(
+                contract,
+                genericTickList="",
+                snapshot=True,
+                regulatorySnapshot=False,
+            )
+            try:
+                await asyncio.sleep(MARKET_DATA_TIMEOUT)
+            except asyncio.CancelledError:
+                raise
+            # snapshot=True auto-cancels on the IB side after data delivery
+
+            # Request 2: snapshot=False, genericTickList='165,236' → avVolume + shortable shares
+            # (tick 165 = avgVolume/ADV, tick 236 = shortableShares)
+            ticker_aux = ib.reqMktData(
+                contract,
+                genericTickList="165,236",
+                snapshot=False,
+                regulatorySnapshot=False,
+            )
             try:
                 await asyncio.sleep(MARKET_DATA_TIMEOUT)
             except asyncio.CancelledError:
                 raise
             ib.cancelMktData(contract)
+
+            # If ib_async returned different ticker objects, copy aux fields to the core ticker
+            if ticker_aux is not ticker:
+                ticker.avVolume = getattr(ticker_aux, "avVolume", None)
+                ticker.shortableShares = getattr(ticker_aux, "shortableShares", None)
 
             return _build_snapshot(ticker, args, args.sec_type.upper(), data_type_ref[0])
     finally:
