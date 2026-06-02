@@ -851,6 +851,11 @@ class TestPreTradeSnapshotRequestShape:
     def setup_method(self):
         self.mock_ib_class = MagicMock()
         self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
+        self.mod._run_risk_check = AsyncMock(return_value={
+            "verdict": "pass", "failures": [], "warnings": [],
+            "checks": {}, "audit_id": "test-audit", "timestamp": "2026-06-02T00:00:00Z"
+        })
+        self.mod._load_limits = MagicMock(return_value={})
 
     def _setup_mock_ib(self, nlv=500_000.0, excess=200_000.0, ticker_kwargs=None):
         mock_instance = MagicMock()
@@ -862,6 +867,7 @@ class TestPreTradeSnapshotRequestShape:
             _make_account_value("DU", "ExcessLiquidity", str(excess)),
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
         t_kwargs = {"last": 100.0, "close": 99.0, "bid": 99.95,
                     "ask": 100.05, "halted": 0, "time": None,
                     "avVolume": None, "volume": None}
@@ -931,6 +937,7 @@ class TestPreTradeSnapshotRequestShape:
             _make_account_value("DU", "ExcessLiquidity", "200000"),
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
         mock_instance.reqMktData = MagicMock(side_effect=[core_t, aux_t])
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
