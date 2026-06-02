@@ -60,6 +60,8 @@ IB_HALT_END_PENDING = 2
 IB_UNSET = 1.7976931348623157e308
 
 DATA_TYPE_NAMES = {1: "live", 2: "frozen", 3: "delayed", 4: "delayed_frozen"}
+CORE_AUX_TICKS = "165,236"
+OPTION_AUX_TICKS = "100,101,106,165,236"
 
 
 def utc_timestamp() -> str:
@@ -130,6 +132,26 @@ def _build_contract(args: argparse.Namespace) -> Contract:
     contract.currency = args.currency
     contract.exchange = args.exchange or "SMART"
     return contract
+
+
+def _aux_generic_ticks(sec_type: str) -> str:
+    if sec_type.upper() in ("OPT", "FOP"):
+        return OPTION_AUX_TICKS
+    return CORE_AUX_TICKS
+
+
+def _copy_aux_fields(ticker, ticker_aux, sec_type: str) -> None:
+    ticker.avVolume = getattr(ticker_aux, "avVolume", None)
+    ticker.shortableShares = getattr(ticker_aux, "shortableShares", None)
+    if sec_type.upper() in ("OPT", "FOP"):
+        if getattr(ticker, "modelGreeks", None) is None:
+            ticker.modelGreeks = getattr(ticker_aux, "modelGreeks", None)
+        if getattr(ticker, "lastGreeks", None) is None:
+            ticker.lastGreeks = getattr(ticker_aux, "lastGreeks", None)
+        if getattr(ticker, "openInterest", None) is None:
+            ticker.openInterest = getattr(ticker_aux, "openInterest", None)
+        if _safe_float(getattr(ticker, "volume", None)) is None:
+            ticker.volume = getattr(ticker_aux, "volume", None)
 
 
 def _build_snapshot(ticker, args: argparse.Namespace, sec_type: str, data_type: int) -> dict:
@@ -384,11 +406,12 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
                 raise
             # snapshot=True auto-cancels on the IB side after data delivery
 
-            # Request 2: snapshot=False, genericTickList='165,236' → avVolume + shortable shares
-            # (tick 165 = avgVolume/ADV, tick 236 = shortableShares)
+            # Request 2: streaming aux ticks. Options preserve 100/101/106 for
+            # option volume, open interest, and IV/Greeks; all types include
+            # 165/236 for avVolume/ADV and shortableShares.
             ticker_aux = ib.reqMktData(
                 contract,
-                genericTickList="165,236",
+                genericTickList=_aux_generic_ticks(args.sec_type),
                 snapshot=False,
                 regulatorySnapshot=False,
             )
@@ -400,8 +423,7 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
 
             # If ib_async returned different ticker objects, copy aux fields to the core ticker
             if ticker_aux is not ticker:
-                ticker.avVolume = getattr(ticker_aux, "avVolume", None)
-                ticker.shortableShares = getattr(ticker_aux, "shortableShares", None)
+                _copy_aux_fields(ticker, ticker_aux, args.sec_type)
 
             return _build_snapshot(ticker, args, args.sec_type.upper(), data_type_ref[0])
     finally:

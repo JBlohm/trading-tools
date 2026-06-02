@@ -58,6 +58,8 @@ DEFAULT_STALE_THRESHOLD = 60   # seconds
 SNAPSHOT_TIMEOUT = 3           # seconds to wait for market data snapshot
 _HALT_HALTED = 1
 _HALT_END_PENDING = 2
+CORE_AUX_TICKS = "165,236"
+OPTION_AUX_TICKS = "100,101,106,165,236"
 
 _REJECTED_STATUSES = frozenset({"Inactive", "ApiCancelled", "ApiRejected"})
 _MARGIN_TAGS = frozenset({"NetLiquidation", "ExcessLiquidity", "BuyingPower", "InitMarginReq", "MaintMarginReq"})
@@ -101,6 +103,25 @@ def _detect_et_session_state() -> str:
     return "closed"
 
 
+def _aux_generic_ticks(sec_type: str) -> str:
+    if sec_type.upper() in ("OPT", "FOP"):
+        return OPTION_AUX_TICKS
+    return CORE_AUX_TICKS
+
+
+def _copy_aux_fields(ticker, ticker_aux, sec_type: str) -> None:
+    ticker.avVolume = getattr(ticker_aux, "avVolume", None)
+    if sec_type.upper() in ("OPT", "FOP"):
+        if getattr(ticker, "modelGreeks", None) is None:
+            ticker.modelGreeks = getattr(ticker_aux, "modelGreeks", None)
+        if getattr(ticker, "lastGreeks", None) is None:
+            ticker.lastGreeks = getattr(ticker_aux, "lastGreeks", None)
+        if getattr(ticker, "openInterest", None) is None:
+            ticker.openInterest = getattr(ticker_aux, "openInterest", None)
+        if _safe_float(getattr(ticker, "volume", None)) is None:
+            ticker.volume = getattr(ticker_aux, "volume", None)
+
+
 async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
                                     quantity, stale_threshold: float,
                                     allow_no_data: bool = False) -> dict:
@@ -118,9 +139,9 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
         raise
     # snapshot=True auto-cancels on the IB side after data delivery
 
-    # Request 2: snapshot=False, genericTickList='165,236' → avVolume + shortable shares
-    # (tick 165 = avgVolume/ADV, tick 236 = shortableShares)
-    ticker_aux = ib.reqMktData(contract, genericTickList="165,236",
+    # Request 2: streaming aux ticks. Options preserve 100/101/106 for option
+    # volume, open interest, and IV/Greeks; all types include 165/236 for ADV.
+    ticker_aux = ib.reqMktData(contract, genericTickList=_aux_generic_ticks(sec_type),
                                snapshot=False, regulatorySnapshot=False)
     try:
         await asyncio.sleep(SNAPSHOT_TIMEOUT)
@@ -130,7 +151,7 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
 
     # If ib_async returned different ticker objects, copy aux fields to the core ticker
     if ticker_aux is not ticker:
-        ticker.avVolume = getattr(ticker_aux, "avVolume", None)
+        _copy_aux_fields(ticker, ticker_aux, sec_type)
 
     bid = _safe_float(ticker.bid)
     ask = _safe_float(ticker.ask)

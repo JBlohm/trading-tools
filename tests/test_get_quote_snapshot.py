@@ -922,6 +922,11 @@ class TestRequestShape:
         )
         mock_ib_class, self.mock_instance = _make_mock_ib(ticker)
         self.mod, _ = _inject_fake_ib_async(mock_ib_class)
+        self.sleep_patch = patch.object(self.mod.asyncio, "sleep", AsyncMock())
+        self.sleep_patch.start()
+
+    def teardown_method(self):
+        self.sleep_patch.stop()
 
     def test_reqMktData_called_twice(self):
         asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
@@ -938,6 +943,17 @@ class TestRequestShape:
         second = self.mock_instance.reqMktData.call_args_list[1]
         assert second.kwargs["snapshot"] is False
         assert second.kwargs["genericTickList"] == "165,236"
+
+    def test_option_second_call_preserves_option_ticks(self):
+        asyncio.run(self.mod.get_quote_snapshot(
+            "127.0.0.1",
+            7497,
+            1009,
+            _make_args(sec_type="OPT", expiry="20260619", strike=180.0, right="C"),
+        ))
+        second = self.mock_instance.reqMktData.call_args_list[1]
+        assert second.kwargs["snapshot"] is False
+        assert second.kwargs["genericTickList"] == "100,101,106,165,236"
 
     def test_adv_from_aux_ticker_when_different_objects(self):
         """When ib_async returns distinct ticker objects, avVolume must be copied from aux."""
@@ -984,3 +1000,45 @@ class TestRequestShape:
         result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
         assert result["liquidity"]["shortable_shares"] == pytest.approx(2_000_000)
         assert not any(w["code"] == "NO_SHORTABLE_SHARES" for w in result["warnings"])
+
+    def test_option_fields_from_aux_ticker_when_different_objects(self):
+        """Option Greeks/open interest must be copied from aux ticker when distinct objects returned."""
+        now = datetime.now(timezone.utc)
+        greeks = _make_greeks(
+            impliedVol=0.27,
+            delta=0.48,
+            gamma=0.03,
+            theta=-0.04,
+            vega=0.12,
+            undPrice=180.5,
+        )
+        core_ticker = _make_ticker(bid=4.10, ask=4.20, last=4.15,
+                                   time=now, halted=0)
+        aux_ticker = _make_ticker(bid=4.10, ask=4.20, last=4.15,
+                                  time=now, volume=1200, avVolume=50_000,
+                                  modelGreeks=greeks, openInterest=3400,
+                                  halted=0)
+
+        mock_ib_class = MagicMock()
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.reqMktData = MagicMock(side_effect=[core_ticker, aux_ticker])
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.client = MagicMock()
+        mock_ib_class.return_value = mock_instance
+
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        result = asyncio.run(mod.get_quote_snapshot(
+            "127.0.0.1",
+            7497,
+            1009,
+            _make_args(sec_type="OPT", expiry="20260619", strike=180.0, right="C"),
+        ))
+        assert result["options"]["iv"] == pytest.approx(0.27)
+        assert result["options"]["delta"] == pytest.approx(0.48)
+        assert result["options"]["open_interest"] == pytest.approx(3400)
+        assert result["options"]["option_volume"] == pytest.approx(1200)
+        assert not any(w["code"] == "NO_OPTION_GREEKS" for w in result["warnings"])
+        assert not any(w["code"] == "NO_OPEN_INTEREST" for w in result["warnings"])

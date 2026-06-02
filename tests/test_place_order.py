@@ -851,6 +851,18 @@ class TestPreTradeSnapshotRequestShape:
     def setup_method(self):
         self.mock_ib_class = MagicMock()
         self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
+        self.sleep_patch = patch.object(self.mod.asyncio, "sleep", AsyncMock())
+        self.sleep_patch.start()
+        self.risk_patch = patch.object(
+            self.mod,
+            "_run_risk_check",
+            AsyncMock(return_value=_pass_risk_result()),
+        )
+        self.risk_patch.start()
+
+    def teardown_method(self):
+        self.risk_patch.stop()
+        self.sleep_patch.stop()
 
     def _setup_mock_ib(self, nlv=500_000.0, excess=200_000.0, ticker_kwargs=None):
         mock_instance = MagicMock()
@@ -899,6 +911,16 @@ class TestPreTradeSnapshotRequestShape:
         assert second.kwargs["snapshot"] is False
         assert second.kwargs["genericTickList"] == "165,236"
 
+    def test_option_second_call_preserves_option_ticks(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(sec_type="OPT", expiry="20260619", strike=180.0, right="C",
+                          quantity=1.0, limit_price=5.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        second = mock_ib.reqMktData.call_args_list[1]
+        assert second.kwargs["snapshot"] is False
+        assert second.kwargs["genericTickList"] == "100,101,106,165,236"
+
     def test_adv_from_aux_ticker_when_different_objects(self):
         """When ib_async returns distinct ticker objects, avVolume is copied from aux."""
         from datetime import datetime, timezone
@@ -943,3 +965,25 @@ class TestPreTradeSnapshotRequestShape:
         snap = result.get("quote_snapshot", {})
         assert snap.get("liquidity", {}).get("adv") == pytest.approx(50_000_000.0)
         assert not any(w["code"] == "NO_ADV" for w in snap.get("warnings", []))
+
+    def test_option_aux_fields_copied_when_different_objects(self):
+        """Option aux fields should survive distinct ib_async ticker objects."""
+        core_t = MagicMock()
+        core_t.modelGreeks = None
+        core_t.lastGreeks = None
+        core_t.openInterest = None
+        core_t.volume = None
+        core_t.avVolume = None
+
+        aux_t = MagicMock()
+        aux_t.modelGreeks = SimpleNamespace(delta=0.5)
+        aux_t.lastGreeks = None
+        aux_t.openInterest = 1200
+        aux_t.volume = 300
+        aux_t.avVolume = 50_000_000.0
+
+        self.mod._copy_aux_fields(core_t, aux_t, "OPT")
+        assert core_t.modelGreeks.delta == pytest.approx(0.5)
+        assert core_t.openInterest == pytest.approx(1200)
+        assert core_t.volume == pytest.approx(300)
+        assert core_t.avVolume == pytest.approx(50_000_000.0)
