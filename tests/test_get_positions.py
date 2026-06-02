@@ -18,7 +18,7 @@ def _make_contract(**kwargs):
         "symbol": "AAPL",
         "secType": "STK",
         "currency": "USD",
-        "primaryExch": "NASDAQ",
+        "primaryExchange": "NASDAQ",
         "exchange": "SMART",
         "conId": 265598,
     }
@@ -82,13 +82,13 @@ class TestPositionToDict:
 
     def test_uses_primary_exchange_when_available(self):
         item = _make_portfolio_item()
-        item.contract = _make_contract(primaryExch="NASDAQ", exchange="SMART")
+        item.contract = _make_contract(primaryExchange="NASDAQ", exchange="SMART")
         result = self.fn(item)
         assert result["exchange"] == "NASDAQ"
 
     def test_falls_back_to_exchange_when_primary_empty(self):
         item = _make_portfolio_item()
-        item.contract = _make_contract(primaryExch="", exchange="SMART")
+        item.contract = _make_contract(primaryExchange="", exchange="SMART")
         result = self.fn(item)
         assert result["exchange"] == "SMART"
 

@@ -95,7 +95,7 @@ def _closing_order_spec(item) -> dict:
         "strike": getattr(c, "strike", None),
         "right": getattr(c, "right", None),
         "currency": c.currency,
-        "exchange": getattr(c, "primaryExch", None) or getattr(c, "exchange", "SMART"),
+        "exchange": getattr(c, "primaryExchange", None) or getattr(c, "exchange", "SMART"),
         "action": _closing_action(item.position),
         "quantity": abs(item.position),
         "order_type": "MKT",
@@ -107,7 +107,7 @@ def _build_contract_from_item(item) -> Contract:
     c = item.contract
     sec_type = c.secType
     if sec_type == "STK":
-        contract = Stock(c.symbol, getattr(c, "primaryExch", None) or "SMART", c.currency)
+        contract = Stock(c.symbol, getattr(c, "primaryExchange", None) or "SMART", c.currency)
     elif sec_type in ("OPT", "FOP"):
         contract = Option(
             c.symbol,
