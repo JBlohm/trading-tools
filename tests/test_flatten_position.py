@@ -128,6 +128,15 @@ class TestHelpers:
         assert spec["action"] == "BUY"
         assert spec["quantity"] == 20.0
 
+    def test_build_stock_contract_preserves_smart_routing(self):
+        item = _make_portfolio_item(
+            contract=_make_contract(primaryExchange="NASDAQ", exchange="SMART")
+        )
+        self.mod.Stock = MagicMock()
+        contract = self.mod._build_contract_from_item(item)
+        self.mod.Stock.assert_called_once_with("AAPL", "SMART", "USD")
+        assert contract.primaryExchange == "NASDAQ"
+
 
 class TestArgParsing:
     def setup_method(self):
