@@ -948,6 +948,14 @@ class TestRequestShape:
         assert second.kwargs["snapshot"] is False
         assert second.kwargs["genericTickList"] == "165,236"
 
+    def test_second_call_option_ticks(self):
+        args = _make_args(sec_type="OPT", expiry="20260619", strike=180.0, right="C")
+        asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, args))
+        second = self.mock_instance.reqMktData.call_args_list[1]
+        assert second.kwargs["snapshot"] is False
+        assert "100,101,106" in second.kwargs["genericTickList"]
+        assert "165,236" in second.kwargs["genericTickList"]
+
     def test_adv_from_aux_ticker_when_different_objects(self):
         """When ib_async returns distinct ticker objects, avVolume must be copied from aux."""
         now = datetime.now(timezone.utc)
