@@ -144,6 +144,9 @@ def _make_args(**kwargs):
         "limit_price": None,
         "tif": "DAY",
         "simulation": False,
+        "max_notional": 100_000.0,
+        "max_pct_nlv": 10.0,
+        "allow_no_data": False,
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -357,10 +360,10 @@ class TestRiskCheckLogicPortfolioCompat:
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
         ticker = MagicMock()
-        ticker.bid = 49.95
-        ticker.ask = 50.05
-        ticker.last = 50.0
-        ticker.close = 49.9
+        ticker.bid = None
+        ticker.ask = None
+        ticker.last = 0.0
+        ticker.close = 0.0
         ticker.halted = 0
         ticker.time = None
         ticker.modelGreeks = None
@@ -422,11 +425,10 @@ class TestPostExecutionConfirmation:
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
         mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
         ticker = MagicMock()
-        # Provide valid bid/ask so the NO_BID_ASK gate doesn't reject
-        ticker.bid = 49.95
-        ticker.ask = 50.05
-        ticker.last = 50.0
-        ticker.close = 49.9
+        ticker.bid = None
+        ticker.ask = None
+        ticker.last = 0.0
+        ticker.close = 0.0
         ticker.halted = 0
         ticker.time = None
         ticker.modelGreeks = None
@@ -724,17 +726,17 @@ class TestPreTradeSnapshotIntegration:
 
 
 # ---------------------------------------------------------------------------
-# NO_BID_ASK hard-reject and delayed-data fallback in pre-trade snapshot (TRA-29)
+# All-null snapshot risk gate (TRA-32)
 # ---------------------------------------------------------------------------
 
-class TestPreTradeSnapshotDelayedData:
-    """TRA-29: reqMarketDataType(3) fallback and NO_BID_ASK hard-reject in place_order."""
+class TestAllNullSnapshotRiskGate:
+    """Risk gate must block orders when all price data is null during regular session."""
 
     def setup_method(self):
         self.mock_ib_class = MagicMock()
         self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
 
-    def _setup_mock_ib_with_ticker(self, ticker_data: dict, nlv=500_000.0, excess=200_000.0):
+    def _setup_mock_ib(self, nlv=500_000.0, excess=200_000.0, ticker_kwargs=None):
         mock_instance = MagicMock()
         mock_instance.connectAsync = AsyncMock()
         mock_instance.qualifyContractsAsync = AsyncMock()
@@ -745,79 +747,216 @@ class TestPreTradeSnapshotDelayedData:
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
         mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
-        mock_instance.portfolio.return_value = []
+        # All-null ticker: bid, ask, last, close all None
+        t = MagicMock()
+        t.bid = None
+        t.ask = None
+        t.last = None
+        t.close = None
+        t.halted = 0
+        t.time = None
+        t.volume = None
+        t.avVolume = None
+        if ticker_kwargs:
+            for k, v in ticker_kwargs.items():
+                setattr(t, k, v)
+        mock_instance.reqMktData.return_value = t
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
-        mock_instance.reqMarketDataType = MagicMock()
-        ticker = SimpleNamespace(**ticker_data)
-        mock_instance.reqMktData.return_value = ticker
+        mock_instance.portfolio.return_value = []
         self.mock_ib_class.return_value = mock_instance
         return mock_instance
 
-    def test_no_bid_ask_causes_risk_check_failed(self):
-        """All-null market data must hard-reject the order, not silently pass."""
-        self._setup_mock_ib_with_ticker({
-            "bid": None, "ask": None, "last": None,
-            "close": None, "halted": 0, "time": None,
-            "modelGreeks": None, "lastGreeks": None,
-        })
-        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT")
-        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+    def test_all_null_regular_session_causes_risk_check_failed(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         assert result["status"] == "risk_check_failed"
-        assert result["quote_snapshot"]["rejected"] is True
-        assert result["quote_snapshot"]["rejection_reason"] == "NO_BID_ASK"
+        assert any("NO_MARKET_DATA" in f for f in result["risk_check"]["failures"])
 
-    def test_no_bid_ask_order_not_placed(self):
-        """Order must not be submitted when no market data is available."""
-        mock_ib = self._setup_mock_ib_with_ticker({
-            "bid": None, "ask": None, "last": None,
-            "close": None, "halted": 0, "time": None,
-            "modelGreeks": None, "lastGreeks": None,
-        })
-        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT")
-        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+    def test_all_null_regular_session_order_not_placed(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         mock_ib.placeOrder.assert_not_called()
 
-    def test_reqMarketDataType_called_with_3_on_null_live_data(self):
-        """reqMarketDataType(3) must be called when live data is all-null."""
-        mock_ib = self._setup_mock_ib_with_ticker({
-            "bid": None, "ask": None, "last": None,
-            "close": None, "halted": 0, "time": None,
-            "modelGreeks": None, "lastGreeks": None,
-        })
-        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT")
-        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
-        calls = [c.args[0] for c in mock_ib.reqMarketDataType.call_args_list]
-        assert 3 in calls, f"reqMarketDataType(3) not called; calls={calls}"
-
-    def test_delayed_flag_order_passes_with_valid_data(self):
-        """--delayed flag: order proceeds when delayed data returns valid bid/ask."""
-        self._setup_mock_ib_with_ticker({
-            "bid": 99.95, "ask": 100.05, "last": 100.0,
-            "close": 99.9, "halted": 0, "time": None,
-            "modelGreeks": None, "lastGreeks": None,
-        })
-        args = _make_args(quantity=1.0, limit_price=100.0, order_type="LMT", delayed=True)
-        with patch("tools.place_order._run_risk_check",
-                   new=AsyncMock(return_value={
-                       "verdict": "pass", "audit_id": "x", "timestamp": "t",
-                       "failures": [], "warnings": [], "risk_checks": [],
-                       "stress_results": {}, "limit_utilization": {},
-                       "account": {}, "projected_position": {}, "margin_impact": {}, "order": {},
-                   })), \
-             patch("tools.place_order._load_limits", return_value={}):
+    def test_all_null_closed_session_not_rejected_for_no_market_data(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="closed"):
             result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
-        assert result.get("status") != "risk_check_failed"
+        # Only risk_check_failed allowed here — but NOT for NO_MARKET_DATA
+        failures = result.get("risk_check", {}).get("failures", [])
+        assert not any("NO_MARKET_DATA" in f for f in failures)
 
-    def test_streaming_mode_used_in_pre_trade_snapshot(self):
-        """snapshot=False must be used in _fetch_pre_trade_snapshot (streaming mode)."""
-        self._setup_mock_ib_with_ticker({
-            "bid": 99.95, "ask": 100.05, "last": 100.0,
-            "close": 99.9, "halted": 0, "time": None,
-            "modelGreeks": None, "lastGreeks": None,
-        })
-        args = _make_args(quantity=1.0, limit_price=100.0, order_type="LMT")
+    def test_all_null_regular_with_allow_no_data_passes_snapshot_gate(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0, allow_no_data=True)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        # Should not fail for NO_MARKET_DATA (may still fail for other risk checks)
+        failures = result.get("risk_check", {}).get("failures", [])
+        assert not any("NO_MARKET_DATA" in f for f in failures)
+
+    def test_all_null_regular_with_allow_no_data_override_warning_in_snapshot(self):
+        self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0, allow_no_data=True)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        snap_warnings = result.get("quote_snapshot", {}).get("warnings", [])
+        assert any(w["code"] == "OVERRIDE_NO_DATA" for w in snap_warnings)
+
+    def test_allow_no_data_arg_parsed(self):
+        mod, _ = _inject_fake_ib_async()
+        with patch("sys.argv", ["place_order.py", "--symbol", "AAPL",
+                                "--action", "BUY", "--quantity", "1",
+                                "--order-type", "MKT", "--allow-no-data"]):
+            args = mod.parse_args()
+        assert args.allow_no_data is True
+
+    def test_allow_no_data_defaults_to_false(self):
+        mod, _ = _inject_fake_ib_async()
+        with patch("sys.argv", ["place_order.py", "--symbol", "AAPL",
+                                "--action", "BUY", "--quantity", "1",
+                                "--order-type", "MKT"]):
+            args = mod.parse_args()
+        assert args.allow_no_data is False
+
+    def test_partial_data_regular_session_not_blocked_for_no_market_data(self):
+        # If last price is available, not a total blackout → no NO_MARKET_DATA block
+        self._setup_mock_ib(ticker_kwargs={"last": 100.0, "close": 99.0})
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        failures = result.get("risk_check", {}).get("failures", [])
+        assert not any("NO_MARKET_DATA" in f for f in failures)
+
+    def test_partial_data_regular_session_without_bid_ask_rejected(self):
+        self._setup_mock_ib(ticker_kwargs={"last": 100.0, "close": 99.0})
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["status"] == "risk_check_failed"
+        assert result["quote_snapshot"]["rejection_reason"] == "NO_BID_ASK"
+
+
+# ---------------------------------------------------------------------------
+# Request shape (TRA-33): two-request pattern in _fetch_pre_trade_snapshot
+# ---------------------------------------------------------------------------
+
+class TestPreTradeSnapshotRequestShape:
+    """TRA-33: _fetch_pre_trade_snapshot must use snapshot=True/empty-ticklist for
+    core fields, then snapshot=False/165,236 for avVolume."""
+
+    def setup_method(self):
+        self.mock_ib_class = MagicMock()
+        self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
+
+    def _setup_mock_ib(self, nlv=500_000.0, excess=200_000.0, ticker_kwargs=None):
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.placeOrder = MagicMock(return_value=_make_trade())
+        summary = [
+            _make_account_value("DU", "NetLiquidation", str(nlv)),
+            _make_account_value("DU", "ExcessLiquidity", str(excess)),
+        ]
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
+        t_kwargs = {"last": 100.0, "close": 99.0, "bid": 99.95,
+                    "ask": 100.05, "halted": 0, "time": None,
+                    "avVolume": None, "volume": None}
+        if ticker_kwargs:
+            t_kwargs.update(ticker_kwargs)
+        mock_instance.reqMktData.return_value = MagicMock(**t_kwargs)
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.portfolio.return_value = []
+        self.mock_ib_class.return_value = mock_instance
+        return mock_instance
+
+    def test_reqMktData_called_twice(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
         asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
-        mock_ib = self.mock_ib_class.return_value
-        first_call = mock_ib.reqMktData.call_args_list[0]
-        assert first_call.kwargs.get("snapshot") is False or first_call.args[2:3] == (False,)
+        assert mock_ib.reqMktData.call_count == 2
+
+    def test_reqMarketDataType_uses_delayed_data(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        mock_ib.reqMarketDataType.assert_called_with(3)
+
+    def test_first_call_snapshot_true_empty_ticklist(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        first = mock_ib.reqMktData.call_args_list[0]
+        assert first.kwargs["snapshot"] is True
+        assert first.kwargs["genericTickList"] == ""
+
+    def test_second_call_snapshot_false_ticklist_165_236(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        second = mock_ib.reqMktData.call_args_list[1]
+        assert second.kwargs["snapshot"] is False
+        assert second.kwargs["genericTickList"] == "165,236"
+
+    def test_adv_from_aux_ticker_when_different_objects(self):
+        """When ib_async returns distinct ticker objects, avVolume is copied from aux."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+
+        core_t = MagicMock()
+        core_t.bid = 99.95
+        core_t.ask = 100.05
+        core_t.last = 100.0
+        core_t.close = 99.0
+        core_t.halted = 0
+        core_t.time = None
+        core_t.avVolume = None
+        core_t.volume = None
+
+        aux_t = MagicMock()
+        aux_t.bid = 99.95
+        aux_t.ask = 100.05
+        aux_t.last = 100.0
+        aux_t.halted = 0
+        aux_t.time = None
+        aux_t.avVolume = 50_000_000.0
+
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.placeOrder = MagicMock(return_value=_make_trade())
+        summary = [
+            _make_account_value("DU", "NetLiquidation", "500000"),
+            _make_account_value("DU", "ExcessLiquidity", "200000"),
+        ]
+        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
+        mock_instance.reqMktData = MagicMock(side_effect=[core_t, aux_t])
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.portfolio.return_value = []
+        self.mock_ib_class.return_value = mock_instance
+
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        snap = result.get("quote_snapshot", {})
+        assert snap.get("liquidity", {}).get("adv") == pytest.approx(50_000_000.0)
+        assert not any(w["code"] == "NO_ADV" for w in snap.get("warnings", []))

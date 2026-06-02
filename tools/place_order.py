@@ -103,32 +103,38 @@ def _detect_et_session_state() -> str:
 
 async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
                                     quantity, stale_threshold: float,
-                                    delayed: bool = False) -> dict:
+                                    allow_no_data: bool = False) -> dict:
     """Fetch a market data snapshot for the pre-trade gate and audit record."""
     now_utc = datetime.now(timezone.utc)
 
-    _GENERIC_TICKS = "100,101,106,236"
-    half = SNAPSHOT_TIMEOUT / 2
+    # Delayed data type lets paper accounts without live subscriptions return
+    # actual quotes instead of all-null snapshots.
+    ib.reqMarketDataType(3)
 
-    async def _stream_and_cancel(market_data_type: int, wait_time: float):
-        ib.reqMarketDataType(market_data_type)
-        t = ib.reqMktData(contract, genericTickList=_GENERIC_TICKS,
-                          snapshot=False, regulatorySnapshot=False)
-        try:
-            await asyncio.sleep(wait_time)
-        except asyncio.CancelledError:
-            raise
-        finally:
-            ib.cancelMktData(contract)
-        return t
+    # Request 1: snapshot=True, empty genericTickList → core price fields
+    # (bid, ask, last, close, volume, quote_time).
+    # snapshot=True + any non-empty genericTickList returns all-null against paper TWS.
+    ticker = ib.reqMktData(contract, genericTickList="",
+                           snapshot=True, regulatorySnapshot=False)
+    try:
+        await asyncio.sleep(SNAPSHOT_TIMEOUT)
+    except asyncio.CancelledError:
+        raise
+    # snapshot=True auto-cancels on the IB side after data delivery
 
-    if delayed:
-        ticker = await _stream_and_cancel(3, SNAPSHOT_TIMEOUT)
-    else:
-        ticker = await _stream_and_cancel(1, half)
-        if (_safe_float(ticker.bid) is None
-                or _safe_float(ticker.ask) is None):
-            ticker = await _stream_and_cancel(3, half)
+    # Request 2: snapshot=False, genericTickList='165,236' → avVolume + shortable shares
+    # (tick 165 = avgVolume/ADV, tick 236 = shortableShares)
+    ticker_aux = ib.reqMktData(contract, genericTickList="165,236",
+                               snapshot=False, regulatorySnapshot=False)
+    try:
+        await asyncio.sleep(SNAPSHOT_TIMEOUT)
+    except asyncio.CancelledError:
+        raise
+    ib.cancelMktData(contract)
+
+    # If ib_async returned different ticker objects, copy aux fields to the core ticker
+    if ticker_aux is not ticker:
+        ticker.avVolume = getattr(ticker_aux, "avVolume", None)
 
     bid = _safe_float(ticker.bid)
     ask = _safe_float(ticker.ask)
@@ -172,6 +178,9 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
             ref_price = p
             break
 
+    # Detect total data blackout: all usable price fields are null
+    no_market_data = (bid is None and ask is None and last is None and close is None)
+
     warnings: list[dict] = []
     if is_halted:
         warnings.append({"code": "HALTED",
@@ -194,19 +203,27 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
                          "message": f"Trading in {session_state.replace('_', '-')} session"})
     elif session_state == "closed":
         warnings.append({"code": "CLOSED_SESSION", "message": "Market is closed"})
+    if no_market_data:
+        warnings.append({"code": "NO_MARKET_DATA",
+                         "message": "No usable price data available (bid, ask, last, close are all null)"})
+    if no_market_data and allow_no_data:
+        warnings.append({"code": "OVERRIDE_NO_DATA",
+                         "message": "NO_MARKET_DATA rejection bypassed by --allow-no-data flag"})
 
     rejected = False
     rejection_reason = None
     if is_halted:
         rejected = True
         rejection_reason = "HALTED"
-    elif bid is None and ask is None:
-        # No market data received after live + delayed attempts — hard-reject
-        rejected = True
-        rejection_reason = "NO_BID_ASK"
     elif is_stale and (bid is not None or ask is not None):
         rejected = True
         rejection_reason = "STALE_QUOTE"
+    elif no_market_data and session_state == "regular" and not allow_no_data:
+        rejected = True
+        rejection_reason = "NO_MARKET_DATA"
+    elif bid is None and ask is None and session_state == "regular" and not allow_no_data:
+        rejected = True
+        rejection_reason = "NO_BID_ASK"
 
     return {
         "symbol": symbol,
@@ -476,10 +493,10 @@ async def place_order(
 
             # --- Pre-trade quote snapshot (always fetched for session/halt/staleness gate) ---
             stale_threshold = getattr(args, "stale_threshold", DEFAULT_STALE_THRESHOLD)
-            delayed = getattr(args, "delayed", False)
+            allow_no_data = getattr(args, "allow_no_data", False)
             quote_snapshot = await _fetch_pre_trade_snapshot(
                 ib, contract, args.symbol, args.sec_type.upper(),
-                args.quantity, stale_threshold, delayed=delayed,
+                args.quantity, stale_threshold, allow_no_data,
             )
             if quote_snapshot["rejected"] and not simulation:
                 failure_message = f"Pre-trade snapshot rejected: {quote_snapshot['rejection_reason']}"
@@ -625,6 +642,8 @@ Examples:
     # Snapshot thresholds
     parser.add_argument("--stale-threshold", type=float, default=DEFAULT_STALE_THRESHOLD,
                         help=f"Quote age in seconds before the instrument is considered stale (default: {DEFAULT_STALE_THRESHOLD})")
+    parser.add_argument("--allow-no-data", action="store_true", default=False,
+                        help="Override NO_MARKET_DATA rejection during regular session (auditable; recorded in warnings)")
 
     return parser.parse_args()
 

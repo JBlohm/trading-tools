@@ -833,123 +833,163 @@ class TestUnavailableFieldWarningCodes:
 
 
 # ---------------------------------------------------------------------------
-# NO_BID_ASK hard rejection (TRA-29)
+# All-null quote snapshot (TRA-32)
 # ---------------------------------------------------------------------------
 
-class TestNoBidAskHardReject:
-    """Verify hard-reject when no bid/ask data is received (even after delayed fallback)."""
+class TestAllNullSnapshot:
+    """Reject orders when all price fields are null during a regular session."""
 
-    def setup_method(self):
-        # Ticker with no bid/ask/last — simulates all-null response
-        ticker = _make_ticker(bid=None, ask=None, last=None, time=None, halted=0)
+    def _run(self, session_state="regular", allow_no_data=False, **ticker_overrides):
+        ticker = _make_ticker(**ticker_overrides)  # all fields default to None
         mock_ib_class, _ = _make_mock_ib(ticker)
-        self.mod, _ = _inject_fake_ib_async(mock_ib_class)
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        args = _make_args(allow_no_data=allow_no_data)
+        with patch.object(mod, "_detect_session_state", return_value=session_state):
+            return asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, args))
 
-    def test_no_bid_ask_causes_hard_rejection(self):
-        result = asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+    def test_all_null_regular_session_rejected(self):
+        result = self._run(session_state="regular")
+        assert result["rejected"] is True
+        assert result["rejection_reason"] == "NO_MARKET_DATA"
+
+    def test_all_null_regular_session_no_market_data_warning(self):
+        result = self._run(session_state="regular")
+        assert any(w["code"] == "NO_MARKET_DATA" for w in result["warnings"])
+
+    def test_all_null_premarket_not_rejected_for_no_data(self):
+        result = self._run(session_state="premarket")
+        assert result["rejected"] is False
+
+    def test_all_null_after_hours_not_rejected_for_no_data(self):
+        result = self._run(session_state="after_hours")
+        assert result["rejected"] is False
+
+    def test_all_null_closed_not_rejected_for_no_data(self):
+        result = self._run(session_state="closed")
+        assert result["rejected"] is False
+
+    def test_all_null_regular_with_allow_no_data_not_rejected(self):
+        result = self._run(session_state="regular", allow_no_data=True)
+        assert result["rejected"] is False
+
+    def test_all_null_regular_with_allow_no_data_override_warning(self):
+        result = self._run(session_state="regular", allow_no_data=True)
+        assert any(w["code"] == "OVERRIDE_NO_DATA" for w in result["warnings"])
+
+    def test_partial_data_regular_session_not_rejected_for_no_market_data(self):
+        # last is available → not a total blackout → no NO_MARKET_DATA rejection
+        result = self._run(session_state="regular", last=150.0)
+        assert result["rejection_reason"] != "NO_MARKET_DATA"
+
+    def test_partial_data_regular_session_without_bid_ask_rejected(self):
+        result = self._run(session_state="regular", last=150.0, close=149.0)
         assert result["rejected"] is True
         assert result["rejection_reason"] == "NO_BID_ASK"
 
-    def test_no_bid_ask_warning_emitted(self):
-        result = asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
-        assert any(w["code"] == "NO_BID_ASK" for w in result["warnings"])
+    def test_all_null_no_market_data_warning_in_all_sessions(self):
+        # The warning should appear regardless of session; only rejection is session-gated
+        result = self._run(session_state="closed")
+        assert any(w["code"] == "NO_MARKET_DATA" for w in result["warnings"])
 
-    def test_no_bid_ask_result_is_json_serialisable(self):
-        result = asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+    def test_all_null_regular_result_json_serialisable(self):
+        result = self._run(session_state="regular")
         json.dumps(result)
 
-    def test_valid_bid_ask_does_not_trigger_no_bid_ask_reject(self):
+    def test_allow_no_data_arg_parsed(self):
+        mod, _ = _inject_fake_ib_async()
+        with patch("sys.argv", ["get_quote_snapshot.py", "--symbol", "AAPL",
+                                "--allow-no-data"]):
+            args = mod.parse_args()
+        assert args.allow_no_data is True
+
+    def test_allow_no_data_defaults_to_false(self):
+        mod, _ = _inject_fake_ib_async()
+        with patch("sys.argv", ["get_quote_snapshot.py", "--symbol", "AAPL"]):
+            args = mod.parse_args()
+        assert args.allow_no_data is False
+
+
+# ---------------------------------------------------------------------------
+# Request shape (TRA-33): two-request pattern
+# ---------------------------------------------------------------------------
+
+class TestRequestShape:
+    """TRA-33: reqMktData must use snapshot=True/empty-ticklist for core fields,
+    then snapshot=False/165,236 for avVolume + shortable shares."""
+
+    def setup_method(self):
         now = datetime.now(timezone.utc)
-        ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05, time=now, halted=0)
-        mock_ib_class, _ = _make_mock_ib(ticker)
-        mod, _ = _inject_fake_ib_async(mock_ib_class)
-        result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
-        assert result["rejection_reason"] != "NO_BID_ASK"
-        assert not any(w["code"] == "NO_BID_ASK" for w in result["warnings"])
+        ticker = _make_ticker(
+            bid=173.50, ask=173.52, last=173.51,
+            bidSize=100, askSize=200,
+            volume=45_000_000, avVolume=78_000_000,
+            close=172.00, time=now, halted=0,
+        )
+        mock_ib_class, self.mock_instance = _make_mock_ib(ticker)
+        self.mod, _ = _inject_fake_ib_async(mock_ib_class)
 
+    def test_reqMktData_called_twice(self):
+        asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        assert self.mock_instance.reqMktData.call_count == 2
 
-# ---------------------------------------------------------------------------
-# Delayed data fallback (TRA-29)
-# ---------------------------------------------------------------------------
+    def test_reqMarketDataType_uses_delayed_data(self):
+        asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        self.mock_instance.reqMarketDataType.assert_called_with(3)
 
-class TestDelayedDataFallback:
-    """Verify reqMarketDataType(3) fallback and --delayed flag behavior."""
+    def test_first_call_snapshot_true_empty_ticklist(self):
+        asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        first = self.mock_instance.reqMktData.call_args_list[0]
+        assert first.kwargs["snapshot"] is True
+        assert first.kwargs["genericTickList"] == ""
 
-    def _make_mock_ib_with_call_tracking(self, live_ticker, delayed_ticker):
-        """Return a mock IB that returns live_ticker on first reqMktData, delayed_ticker on second."""
+    def test_second_call_snapshot_false_ticklist_165_236(self):
+        asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        second = self.mock_instance.reqMktData.call_args_list[1]
+        assert second.kwargs["snapshot"] is False
+        assert second.kwargs["genericTickList"] == "165,236"
+
+    def test_adv_from_aux_ticker_when_different_objects(self):
+        """When ib_async returns distinct ticker objects, avVolume must be copied from aux."""
+        now = datetime.now(timezone.utc)
+        core_ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05,
+                                   time=now, avVolume=None, halted=0)
+        aux_ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05,
+                                  time=now, avVolume=55_000_000, halted=0)
+
         mock_ib_class = MagicMock()
         mock_instance = MagicMock()
         mock_instance.connectAsync = AsyncMock()
         mock_instance.qualifyContractsAsync = AsyncMock()
-        call_count = [0]
-
-        def req_mkt_data(*a, **kw):
-            call_count[0] += 1
-            return live_ticker if call_count[0] == 1 else delayed_ticker
-
-        mock_instance.reqMktData = MagicMock(side_effect=req_mkt_data)
+        mock_instance.reqMktData = MagicMock(side_effect=[core_ticker, aux_ticker])
         mock_instance.cancelMktData = MagicMock()
         mock_instance.disconnect = MagicMock()
         mock_instance.client = MagicMock()
-        mock_instance.reqMarketDataType = MagicMock()
         mock_ib_class.return_value = mock_instance
-        return mock_ib_class, mock_instance
 
-    def test_fallback_to_delayed_when_live_returns_all_null(self):
-        now = datetime.now(timezone.utc)
-        live_ticker = _make_ticker(bid=None, ask=None, last=None, time=None, halted=0)
-        delayed_ticker = _make_ticker(bid=150.0, ask=150.10, last=150.05, time=now, halted=0)
-        mock_ib_class, mock_instance = self._make_mock_ib_with_call_tracking(
-            live_ticker, delayed_ticker)
         mod, _ = _inject_fake_ib_async(mock_ib_class)
         result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
-        # Should have fallen back to delayed and returned valid data
-        assert result["quote"]["bid"] == pytest.approx(150.0)
-        assert result["rejected"] is False
+        assert result["liquidity"]["adv"] == pytest.approx(55_000_000)
+        assert not any(w["code"] == "NO_ADV" for w in result["warnings"])
 
-    def test_no_fallback_when_live_returns_data(self):
+    def test_shortable_shares_from_aux_ticker_when_different_objects(self):
+        """shortableShares must be copied from aux ticker when distinct objects returned."""
         now = datetime.now(timezone.utc)
-        live_ticker = _make_ticker(bid=200.0, ask=200.10, last=200.05, time=now, halted=0)
-        delayed_ticker = _make_ticker(bid=199.0, ask=199.10, last=199.05, time=now, halted=0)
-        mock_ib_class, mock_instance = self._make_mock_ib_with_call_tracking(
-            live_ticker, delayed_ticker)
+        core_ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05,
+                                   time=now, shortableShares=None, halted=0)
+        aux_ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05,
+                                  time=now, shortableShares=2_000_000, halted=0)
+
+        mock_ib_class = MagicMock()
+        mock_instance = MagicMock()
+        mock_instance.connectAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.reqMktData = MagicMock(side_effect=[core_ticker, aux_ticker])
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
+        mock_instance.client = MagicMock()
+        mock_ib_class.return_value = mock_instance
+
         mod, _ = _inject_fake_ib_async(mock_ib_class)
         result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
-        # Should use live data, not delayed
-        assert result["quote"]["bid"] == pytest.approx(200.0)
-        # reqMktData should only have been called once (live attempt only)
-        assert mock_instance.reqMktData.call_count == 1
-
-    def test_delayed_flag_skips_live_attempt(self):
-        now = datetime.now(timezone.utc)
-        delayed_ticker = _make_ticker(bid=155.0, ask=155.10, last=155.05, time=now, halted=0)
-        # Use simple mock: with --delayed, only one reqMktData call expected
-        mock_ib_class, mock_instance = _make_mock_ib(delayed_ticker)
-        mod, _ = _inject_fake_ib_async(mock_ib_class)
-        args = _make_args(delayed=True)
-        result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, args))
-        # With --delayed, only one reqMktData call (directly to delayed type 3)
-        assert mock_instance.reqMktData.call_count == 1
-        assert result["quote"]["bid"] == pytest.approx(155.0)
-
-    def test_reqMarketDataType_called_with_type_3_on_fallback(self):
-        live_ticker = _make_ticker(bid=None, ask=None, last=None, time=None, halted=0)
-        now = datetime.now(timezone.utc)
-        delayed_ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05, time=now, halted=0)
-        mock_ib_class, mock_instance = self._make_mock_ib_with_call_tracking(
-            live_ticker, delayed_ticker)
-        mod, _ = _inject_fake_ib_async(mock_ib_class)
-        asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
-        # reqMarketDataType must be called with 3 at some point during fallback
-        calls = [c.args[0] for c in mock_instance.reqMarketDataType.call_args_list]
-        assert 3 in calls
-
-    def test_streaming_mode_used_not_snapshot(self):
-        now = datetime.now(timezone.utc)
-        ticker = _make_ticker(bid=100.0, ask=100.10, last=100.05, time=now, halted=0)
-        mock_ib_class, mock_instance = _make_mock_ib(ticker)
-        mod, _ = _inject_fake_ib_async(mock_ib_class)
-        asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
-        # snapshot=False must be used (streaming mode)
-        call_kwargs = mock_instance.reqMktData.call_args_list[0]
-        assert call_kwargs.kwargs.get("snapshot") is False or call_kwargs.args[2:3] == (False,)
+        assert result["liquidity"]["shortable_shares"] == pytest.approx(2_000_000)
+        assert not any(w["code"] == "NO_SHORTABLE_SHARES" for w in result["warnings"])

@@ -258,20 +258,33 @@ def _build_snapshot(ticker, args: argparse.Namespace, sec_type: str, data_type: 
         if options_out.get("open_interest") is None:
             warnings.append({"code": "NO_OPEN_INTEREST", "message": "Open interest unavailable"})
 
+    # Detect total data blackout: all usable price fields are null
+    no_market_data = (bid is None and ask is None and last is None and close is None)
+    allow_no_data = getattr(args, "allow_no_data", False)
+
+    if no_market_data:
+        warnings.append({"code": "NO_MARKET_DATA",
+                         "message": "No usable price data available (bid, ask, last, close are all null)"})
+    if no_market_data and allow_no_data:
+        warnings.append({"code": "OVERRIDE_NO_DATA",
+                         "message": "NO_MARKET_DATA rejection bypassed by --allow-no-data flag"})
+
     # Hard rejection — first match wins
     rejected = False
     rejection_reason = None
     if is_halted:
         rejected = True
         rejection_reason = "HALTED"
-    elif bid is None and ask is None:
-        # No market data received — hard-reject even after delayed-data fallback
-        rejected = True
-        rejection_reason = "NO_BID_ASK"
     elif is_stale and (bid is not None or ask is not None):
         # Reject only when we can confirm data is stale (have prices but stale timestamp)
         rejected = True
         rejection_reason = "STALE_QUOTE"
+    elif no_market_data and session_state == "regular" and not allow_no_data:
+        rejected = True
+        rejection_reason = "NO_MARKET_DATA"
+    elif bid is None and ask is None and session_state == "regular" and not allow_no_data:
+        rejected = True
+        rejection_reason = "NO_BID_ASK"
     elif order_pct_adv is not None and order_pct_adv > args.hard_reject_order_pct_adv:
         rejected = True
         rejection_reason = "INSUFFICIENT_LIQUIDITY"
@@ -336,7 +349,17 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
     try:
         with contextlib.redirect_stdout(sys.stderr):
             contract = _build_contract(args)
-            await ib.qualifyContractsAsync(contract)
+            qualified = await ib.qualifyContractsAsync(contract)
+            if not qualified or qualified[0] is None:
+                raise ValueError(
+                    f"Contract not found in IB system: {args.symbol} {args.sec_type}"
+                    + (f" {args.expiry} {args.strike} {args.right}" if args.sec_type.upper() in ("OPT", "FOP") else "")
+                    + " — IB Error 200. For paper accounts check options market data API permissions in IB Client Portal."
+                )
+
+            # Request delayed data (type 3) so paper accounts without live
+            # subscriptions return actual quotes instead of all-null snapshots.
+            ib.reqMarketDataType(3)
 
             # Track data type reported by TWS for source labeling
             data_type_ref = [1]
@@ -349,33 +372,39 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
             except AttributeError:
                 pass  # older ib_async versions; data_type stays 1 (live)
 
-            # Generic tick list: 100=opt_vol, 101=opt_OI, 106=IV, 236=shortable
-            _GENERIC_TICKS = "100,101,106,236"
-            use_delayed = getattr(args, "delayed", False)
+            # Request 1: snapshot=True, empty genericTickList → core price fields
+            # (bid, ask, last, close, volume, quote_time).
+            # snapshot=True + any non-empty genericTickList returns all-null against paper TWS.
+            ticker = ib.reqMktData(
+                contract,
+                genericTickList="",
+                snapshot=True,
+                regulatorySnapshot=False,
+            )
+            try:
+                await asyncio.sleep(MARKET_DATA_TIMEOUT)
+            except asyncio.CancelledError:
+                raise
+            # snapshot=True auto-cancels on the IB side after data delivery
 
-            async def _stream_and_cancel(market_data_type: int, wait_time: float):
-                """Request streaming data for wait_time seconds then cancel."""
-                ib.reqMarketDataType(market_data_type)
-                t = ib.reqMktData(contract, genericTickList=_GENERIC_TICKS,
-                                  snapshot=False, regulatorySnapshot=False)
-                try:
-                    await asyncio.sleep(wait_time)
-                except asyncio.CancelledError:
-                    raise
-                finally:
-                    ib.cancelMktData(contract)
-                return t
+            # Request 2: snapshot=False, genericTickList='165,236' → avVolume + shortable shares
+            # (tick 165 = avgVolume/ADV, tick 236 = shortableShares)
+            ticker_aux = ib.reqMktData(
+                contract,
+                genericTickList="165,236",
+                snapshot=False,
+                regulatorySnapshot=False,
+            )
+            try:
+                await asyncio.sleep(MARKET_DATA_TIMEOUT)
+            except asyncio.CancelledError:
+                raise
+            ib.cancelMktData(contract)
 
-            if use_delayed:
-                # Explicit delayed mode: skip live attempt
-                ticker = await _stream_and_cancel(3, MARKET_DATA_TIMEOUT)
-            else:
-                # Try live data first; fall back to delayed if bid/ask are unusable.
-                half = MARKET_DATA_TIMEOUT / 2
-                ticker = await _stream_and_cancel(1, half)
-                if (_safe_float(ticker.bid) is None
-                        or _safe_float(ticker.ask) is None):
-                    ticker = await _stream_and_cancel(3, half)
+            # If ib_async returned different ticker objects, copy aux fields to the core ticker
+            if ticker_aux is not ticker:
+                ticker.avVolume = getattr(ticker_aux, "avVolume", None)
+                ticker.shortableShares = getattr(ticker_aux, "shortableShares", None)
 
             return _build_snapshot(ticker, args, args.sec_type.upper(), data_type_ref[0])
     finally:
@@ -435,6 +464,8 @@ Examples:
     parser.add_argument("--hard-reject-order-pct-adv", type=float,
                         default=DEFAULT_HARD_REJECT_ORDER_PCT_ADV,
                         help=f"Order size as %% of ADV hard-reject threshold (default: {DEFAULT_HARD_REJECT_ORDER_PCT_ADV})")
+    parser.add_argument("--allow-no-data", action="store_true", default=False,
+                        help="Override NO_MARKET_DATA rejection during regular session (auditable; recorded in warnings)")
 
     return parser.parse_args()
 
@@ -450,6 +481,16 @@ def main() -> None:
                 "error": str(exc),
                 "status": "tws_unavailable",
                 "hint": "The TWS API is temporarily not available. Please try again later.",
+                "timestamp": utc_timestamp(),
+            }),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except ValueError as exc:
+        print(
+            json.dumps({
+                "error": str(exc),
+                "status": "contract_not_found",
                 "timestamp": utc_timestamp(),
             }),
             file=sys.stderr,
