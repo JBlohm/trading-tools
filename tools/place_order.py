@@ -120,7 +120,12 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
 
     # Request 2: snapshot=False, genericTickList='165,236' → avVolume + shortable shares
     # (tick 165 = avgVolume/ADV, tick 236 = shortableShares)
-    ticker_aux = ib.reqMktData(contract, genericTickList="165,236",
+    # For OPT/FOP, also include 100 (option volume), 101 (open interest), 106 (greeks)
+    ticks = "165,236"
+    if sec_type.upper() in ("OPT", "FOP"):
+        ticks += ",100,101,106"
+
+    ticker_aux = ib.reqMktData(contract, genericTickList=ticks,
                                snapshot=False, regulatorySnapshot=False)
     try:
         await asyncio.sleep(SNAPSHOT_TIMEOUT)
@@ -131,6 +136,13 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
     # If ib_async returned different ticker objects, copy aux fields to the core ticker
     if ticker_aux is not ticker:
         ticker.avVolume = getattr(ticker_aux, "avVolume", None)
+        ticker.shortableShares = getattr(ticker_aux, "shortableShares", None)
+        if sec_type.upper() in ("OPT", "FOP"):
+            ticker.openInterest = getattr(ticker_aux, "openInterest", None)
+            ticker.modelGreeks = getattr(ticker_aux, "modelGreeks", None)
+            ticker.lastGreeks = getattr(ticker_aux, "lastGreeks", None)
+            if ticker.volume is None:
+                ticker.volume = getattr(ticker_aux, "volume", None)
 
     bid = _safe_float(ticker.bid)
     ask = _safe_float(ticker.ask)

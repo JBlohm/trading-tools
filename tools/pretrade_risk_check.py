@@ -138,11 +138,37 @@ def _extract_greeks(ticker) -> dict:
 
 
 async def _fetch_quote(ib, contract) -> dict:
+    # Request 1: snapshot=True, empty genericTickList → core price fields.
+    # snapshot=True + any non-empty genericTickList returns all-null against paper TWS.
     ticker = ib.reqMktData(contract, genericTickList="", snapshot=True, regulatorySnapshot=False)
     try:
         await asyncio.sleep(MARKET_DATA_TIMEOUT)
     except asyncio.CancelledError:
         raise
+
+    # Request 2: snapshot=False, genericTickList='165,236' → avVolume + shortable shares.
+    # For OPT/FOP, also include 100 (option volume), 101 (open interest), 106 (greeks).
+    ticks = "165,236"
+    if contract.secType in ("OPT", "FOP"):
+        ticks += ",100,101,106"
+
+    ticker_aux = ib.reqMktData(contract, genericTickList=ticks, snapshot=False, regulatorySnapshot=False)
+    try:
+        await asyncio.sleep(MARKET_DATA_TIMEOUT)
+    except asyncio.CancelledError:
+        raise
+    ib.cancelMktData(contract)
+
+    # If ib_async returned different ticker objects, copy aux fields to the core ticker
+    if ticker_aux is not ticker:
+        ticker.avVolume = getattr(ticker_aux, "avVolume", None)
+        ticker.shortableShares = getattr(ticker_aux, "shortableShares", None)
+        if contract.secType in ("OPT", "FOP"):
+            ticker.openInterest = getattr(ticker_aux, "openInterest", None)
+            ticker.modelGreeks = getattr(ticker_aux, "modelGreeks", None)
+            ticker.lastGreeks = getattr(ticker_aux, "lastGreeks", None)
+            if ticker.volume is None:
+                ticker.volume = getattr(ticker_aux, "volume", None)
 
     def _clean(val):
         if val is None or val == IB_UNSET:
@@ -154,8 +180,6 @@ async def _fetch_quote(ib, contract) -> dict:
     last = _clean(getattr(ticker, "last", None))
     close = _clean(getattr(ticker, "close", None))
     quote_time = getattr(ticker, "time", None)
-
-    ib.cancelMktData(contract)
 
     mid = (bid + ask) / 2.0 if bid is not None and ask is not None else None
     spread_pct = None

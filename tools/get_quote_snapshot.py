@@ -386,9 +386,14 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
 
             # Request 2: snapshot=False, genericTickList='165,236' → avVolume + shortable shares
             # (tick 165 = avgVolume/ADV, tick 236 = shortableShares)
+            # For OPT/FOP, also include 100 (option volume), 101 (open interest), 106 (greeks)
+            ticks = "165,236"
+            if args.sec_type.upper() in ("OPT", "FOP"):
+                ticks += ",100,101,106"
+
             ticker_aux = ib.reqMktData(
                 contract,
-                genericTickList="165,236",
+                genericTickList=ticks,
                 snapshot=False,
                 regulatorySnapshot=False,
             )
@@ -402,6 +407,12 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
             if ticker_aux is not ticker:
                 ticker.avVolume = getattr(ticker_aux, "avVolume", None)
                 ticker.shortableShares = getattr(ticker_aux, "shortableShares", None)
+                if args.sec_type.upper() in ("OPT", "FOP"):
+                    ticker.openInterest = getattr(ticker_aux, "openInterest", None)
+                    ticker.modelGreeks = getattr(ticker_aux, "modelGreeks", None)
+                    ticker.lastGreeks = getattr(ticker_aux, "lastGreeks", None)
+                    if ticker.volume is None:
+                        ticker.volume = getattr(ticker_aux, "volume", None)
 
             return _build_snapshot(ticker, args, args.sec_type.upper(), data_type_ref[0])
     finally:

@@ -61,7 +61,17 @@ def _make_trade(contract=None, order=None, status=None):
 
 def _inject_fake_ib_async(mock_ib_class=None):
     fake = types.ModuleType("ib_async")
-    fake.IB = mock_ib_class or MagicMock
+    
+    # Use a factory that returns a mock with common async methods pre-set
+    def ib_mock_factory(*args, **kwargs):
+        m = MagicMock()
+        m.connectAsync = AsyncMock()
+        m.qualifyContractsAsync = AsyncMock(return_value=[])
+        m.accountSummaryAsync = AsyncMock(return_value=[])
+        m.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
+        return m
+
+    fake.IB = mock_ib_class or MagicMock(side_effect=ib_mock_factory)
 
     # Minimal stand-ins for contract/order classes
     class FakeContract:
@@ -851,31 +861,30 @@ class TestPreTradeSnapshotRequestShape:
     def setup_method(self):
         self.mock_ib_class = MagicMock()
         self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
-        self.mod._run_risk_check = AsyncMock(return_value={
+        self.risk_check_mock = MagicMock(return_value={
             "verdict": "pass", "failures": [], "warnings": [],
             "checks": {}, "audit_id": "test-audit", "timestamp": "2026-06-02T00:00:00Z"
         })
-        self.mod._load_limits = MagicMock(return_value={})
 
     def _setup_mock_ib(self, nlv=500_000.0, excess=200_000.0, ticker_kwargs=None):
         mock_instance = MagicMock()
         mock_instance.connectAsync = AsyncMock()
-        mock_instance.qualifyContractsAsync = AsyncMock()
+        mock_instance.qualifyContractsAsync = AsyncMock(return_value=[])
+        mock_instance.accountSummaryAsync = AsyncMock()
+        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
         mock_instance.placeOrder = MagicMock(return_value=_make_trade())
         summary = [
             _make_account_value("DU", "NetLiquidation", str(nlv)),
             _make_account_value("DU", "ExcessLiquidity", str(excess)),
         ]
-        mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
-        mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
+        mock_instance.accountSummaryAsync.return_value = summary
+        
         t_kwargs = {"last": 100.0, "close": 99.0, "bid": 99.95,
                     "ask": 100.05, "halted": 0, "time": None,
                     "avVolume": None, "volume": None}
         if ticker_kwargs:
             t_kwargs.update(ticker_kwargs)
         mock_instance.reqMktData.return_value = MagicMock(**t_kwargs)
-        mock_instance.cancelMktData = MagicMock()
-        mock_instance.disconnect = MagicMock()
         mock_instance.portfolio.return_value = []
         self.mock_ib_class.return_value = mock_instance
         return mock_instance
@@ -884,14 +893,16 @@ class TestPreTradeSnapshotRequestShape:
         mock_ib = self._setup_mock_ib()
         args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
                           max_notional=100_000, max_pct_nlv=10.0)
-        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        with patch.object(self.mod, "_run_risk_check", AsyncMock(return_value=self.risk_check_mock())):
+            asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         assert mock_ib.reqMktData.call_count == 2
 
     def test_first_call_snapshot_true_empty_ticklist(self):
         mock_ib = self._setup_mock_ib()
         args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
                           max_notional=100_000, max_pct_nlv=10.0)
-        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        with patch.object(self.mod, "_run_risk_check", AsyncMock(return_value=self.risk_check_mock())):
+            asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         first = mock_ib.reqMktData.call_args_list[0]
         assert first.kwargs["snapshot"] is True
         assert first.kwargs["genericTickList"] == ""
@@ -900,10 +911,22 @@ class TestPreTradeSnapshotRequestShape:
         mock_ib = self._setup_mock_ib()
         args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
                           max_notional=100_000, max_pct_nlv=10.0)
-        asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        with patch.object(self.mod, "_run_risk_check", AsyncMock(return_value=self.risk_check_mock())):
+            asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         second = mock_ib.reqMktData.call_args_list[1]
         assert second.kwargs["snapshot"] is False
         assert second.kwargs["genericTickList"] == "165,236"
+
+    def test_second_call_option_ticks(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          sec_type="OPT", expiry="20260619", strike=180.0, right="C")
+        with patch.object(self.mod, "_run_risk_check", AsyncMock(return_value=self.risk_check_mock())):
+            asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        second = mock_ib.reqMktData.call_args_list[1]
+        assert second.kwargs["snapshot"] is False
+        assert "100,101,106" in second.kwargs["genericTickList"]
+        assert "165,236" in second.kwargs["genericTickList"]
 
     def test_adv_from_aux_ticker_when_different_objects(self):
         """When ib_async returns distinct ticker objects, avVolume is copied from aux."""
@@ -946,7 +969,8 @@ class TestPreTradeSnapshotRequestShape:
 
         args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
                           max_notional=100_000, max_pct_nlv=10.0)
-        result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        with patch.object(self.mod, "_run_risk_check", AsyncMock(return_value=self.risk_check_mock())):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         snap = result.get("quote_snapshot", {})
         assert snap.get("liquidity", {}).get("adv") == pytest.approx(50_000_000.0)
         assert not any(w["code"] == "NO_ADV" for w in snap.get("warnings", []))
