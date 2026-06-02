@@ -106,13 +106,31 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
                                     allow_no_data: bool = False) -> dict:
     """Fetch a market data snapshot for the pre-trade gate and audit record."""
     now_utc = datetime.now(timezone.utc)
-    ticker = ib.reqMktData(contract, genericTickList="100,101,106,236",
+
+    # Request 1: snapshot=True, empty genericTickList → core price fields
+    # (bid, ask, last, close, volume, quote_time).
+    # snapshot=True + any non-empty genericTickList returns all-null against paper TWS.
+    ticker = ib.reqMktData(contract, genericTickList="",
                            snapshot=True, regulatorySnapshot=False)
     try:
         await asyncio.sleep(SNAPSHOT_TIMEOUT)
     except asyncio.CancelledError:
         raise
+    # snapshot=True auto-cancels on the IB side after data delivery
+
+    # Request 2: snapshot=False, genericTickList='165,236' → avVolume + shortable shares
+    # (tick 165 = avgVolume/ADV, tick 236 = shortableShares)
+    ticker_aux = ib.reqMktData(contract, genericTickList="165,236",
+                               snapshot=False, regulatorySnapshot=False)
+    try:
+        await asyncio.sleep(SNAPSHOT_TIMEOUT)
+    except asyncio.CancelledError:
+        raise
     ib.cancelMktData(contract)
+
+    # If ib_async returned different ticker objects, copy aux fields to the core ticker
+    if ticker_aux is not ticker:
+        ticker.avVolume = getattr(ticker_aux, "avVolume", None)
 
     bid = _safe_float(ticker.bid)
     ask = _safe_float(ticker.ask)
