@@ -15,7 +15,7 @@ def _make_contract(**kwargs):
         "symbol": "SPY",
         "secType": "OPT",
         "currency": "USD",
-        "primaryExch": "CBOE",
+        "primaryExchange": "CBOE",
         "exchange": "SMART",
         "conId": 123456,
         "lastTradeDateOrContractMonth": "20251220",

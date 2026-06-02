@@ -15,7 +15,7 @@ def _make_contract(**kwargs):
         "symbol": "AAPL",
         "secType": "STK",
         "currency": "USD",
-        "primaryExch": "NASDAQ",
+        "primaryExchange": "NASDAQ",
         "exchange": "SMART",
         "conId": 12345,
         "lastTradeDateOrContractMonth": None,
@@ -31,7 +31,7 @@ def _make_opt_contract(**kwargs):
         "symbol": "SPY",
         "secType": "OPT",
         "currency": "USD",
-        "primaryExch": "CBOE",
+        "primaryExchange": "CBOE",
         "exchange": "SMART",
         "conId": 99999,
         "lastTradeDateOrContractMonth": "20251220",
@@ -127,6 +127,15 @@ class TestHelpers:
         spec = self.mod._closing_order_spec(item)
         assert spec["action"] == "BUY"
         assert spec["quantity"] == 20.0
+
+    def test_build_stock_contract_preserves_smart_routing(self):
+        item = _make_portfolio_item(
+            contract=_make_contract(primaryExchange="NASDAQ", exchange="SMART")
+        )
+        self.mod.Stock = MagicMock()
+        contract = self.mod._build_contract_from_item(item)
+        self.mod.Stock.assert_called_once_with("AAPL", "SMART", "USD")
+        assert contract.primaryExchange == "NASDAQ"
 
 
 class TestArgParsing:

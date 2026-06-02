@@ -50,7 +50,7 @@ def position_to_dict(item: Any) -> dict:
         "symbol": contract.symbol,
         "sec_type": contract.secType,
         "currency": contract.currency,
-        "exchange": contract.primaryExch or contract.exchange,
+        "exchange": contract.primaryExchange or contract.exchange,
         "con_id": contract.conId,
         "position": item.position,
         "market_price": item.marketPrice,

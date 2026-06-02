@@ -16,7 +16,7 @@ def _make_contract(**kwargs):
         "symbol": "SPY",
         "secType": "OPT",
         "currency": "USD",
-        "primaryExch": "CBOE",
+        "primaryExchange": "CBOE",
         "exchange": "SMART",
         "conId": 99001,
         "lastTradeDateOrContractMonth": "20251220",
@@ -32,7 +32,7 @@ def _make_stk_contract(**kwargs):
         "symbol": "AAPL",
         "secType": "STK",
         "currency": "USD",
-        "primaryExch": "NASDAQ",
+        "primaryExchange": "NASDAQ",
         "exchange": "SMART",
         "conId": 99002,
     }
