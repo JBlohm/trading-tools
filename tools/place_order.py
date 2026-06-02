@@ -107,6 +107,10 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
     """Fetch a market data snapshot for the pre-trade gate and audit record."""
     now_utc = datetime.now(timezone.utc)
 
+    # Delayed data type lets paper accounts without live subscriptions return
+    # actual quotes instead of all-null snapshots.
+    ib.reqMarketDataType(3)
+
     # Request 1: snapshot=True, empty genericTickList → core price fields
     # (bid, ask, last, close, volume, quote_time).
     # snapshot=True + any non-empty genericTickList returns all-null against paper TWS.
@@ -229,6 +233,9 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
     elif no_market_data and session_state == "regular" and not allow_no_data:
         rejected = True
         rejection_reason = "NO_MARKET_DATA"
+    elif bid is None and ask is None and session_state == "regular" and not allow_no_data:
+        rejected = True
+        rejection_reason = "NO_BID_ASK"
 
     return {
         "symbol": symbol,
@@ -638,6 +645,11 @@ Examples:
     # Risk gate
     parser.add_argument("--simulation", action="store_true",
                         help="Simulation/test mode: bypass risk gate failures and place the order anyway")
+
+    # Market data type
+    parser.add_argument("--delayed", action="store_true",
+                        help="Request delayed market data (type 3) for the pre-trade snapshot; "
+                             "skips live attempt. Use for paper accounts without live subscriptions.")
 
     # Snapshot thresholds
     parser.add_argument("--stale-threshold", type=float, default=DEFAULT_STALE_THRESHOLD,

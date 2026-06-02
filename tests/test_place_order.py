@@ -61,7 +61,7 @@ def _make_trade(contract=None, order=None, status=None):
 
 def _inject_fake_ib_async(mock_ib_class=None):
     fake = types.ModuleType("ib_async")
-    
+
     # Use a factory that returns a mock with common async methods pre-set
     def ib_mock_factory(*args, **kwargs):
         m = MagicMock()
@@ -849,6 +849,15 @@ class TestAllNullSnapshotRiskGate:
         failures = result.get("risk_check", {}).get("failures", [])
         assert not any("NO_MARKET_DATA" in f for f in failures)
 
+    def test_partial_data_regular_session_without_bid_ask_rejected(self):
+        self._setup_mock_ib(ticker_kwargs={"last": 100.0, "close": 99.0})
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["status"] == "risk_check_failed"
+        assert result["quote_snapshot"]["rejection_reason"] == "NO_BID_ASK"
+
 
 # ---------------------------------------------------------------------------
 # Request shape (TRA-33): two-request pattern in _fetch_pre_trade_snapshot
@@ -878,13 +887,15 @@ class TestPreTradeSnapshotRequestShape:
             _make_account_value("DU", "ExcessLiquidity", str(excess)),
         ]
         mock_instance.accountSummaryAsync.return_value = summary
-        
+
         t_kwargs = {"last": 100.0, "close": 99.0, "bid": 99.95,
                     "ask": 100.05, "halted": 0, "time": None,
                     "avVolume": None, "volume": None}
         if ticker_kwargs:
             t_kwargs.update(ticker_kwargs)
         mock_instance.reqMktData.return_value = MagicMock(**t_kwargs)
+        mock_instance.cancelMktData = MagicMock()
+        mock_instance.disconnect = MagicMock()
         mock_instance.portfolio.return_value = []
         self.mock_ib_class.return_value = mock_instance
         return mock_instance
@@ -896,6 +907,14 @@ class TestPreTradeSnapshotRequestShape:
         with patch.object(self.mod, "_run_risk_check", AsyncMock(return_value=self.risk_check_mock())):
             asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
         assert mock_ib.reqMktData.call_count == 2
+
+    def test_reqMarketDataType_uses_delayed_data(self):
+        mock_ib = self._setup_mock_ib()
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0)
+        with patch.object(self.mod, "_run_risk_check", AsyncMock(return_value=self.risk_check_mock())):
+            asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        mock_ib.reqMarketDataType.assert_called_with(3)
 
     def test_first_call_snapshot_true_empty_ticklist(self):
         mock_ib = self._setup_mock_ib()

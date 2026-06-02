@@ -881,6 +881,11 @@ class TestAllNullSnapshot:
         result = self._run(session_state="regular", last=150.0)
         assert result["rejection_reason"] != "NO_MARKET_DATA"
 
+    def test_partial_data_regular_session_without_bid_ask_rejected(self):
+        result = self._run(session_state="regular", last=150.0, close=149.0)
+        assert result["rejected"] is True
+        assert result["rejection_reason"] == "NO_BID_ASK"
+
     def test_all_null_no_market_data_warning_in_all_sessions(self):
         # The warning should appear regardless of session; only rejection is session-gated
         result = self._run(session_state="closed")
@@ -926,6 +931,10 @@ class TestRequestShape:
     def test_reqMktData_called_twice(self):
         asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
         assert self.mock_instance.reqMktData.call_count == 2
+
+    def test_reqMarketDataType_uses_delayed_data(self):
+        asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))
+        self.mock_instance.reqMarketDataType.assert_called_with(3)
 
     def test_first_call_snapshot_true_empty_ticklist(self):
         asyncio.run(self.mod.get_quote_snapshot("127.0.0.1", 7497, 1009, _make_args()))

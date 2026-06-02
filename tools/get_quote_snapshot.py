@@ -48,7 +48,7 @@ PORT_PAPER = 7497
 PORT_LIVE = 7496
 CLIENT_ID = 1009
 CONNECT_TIMEOUT = 10
-MARKET_DATA_TIMEOUT = 5  # seconds to wait for snapshot data
+MARKET_DATA_TIMEOUT = 5  # seconds to wait for market data (split across live + delayed attempts)
 
 DEFAULT_STALE_THRESHOLD = 60        # seconds — quote age before stale flag
 DEFAULT_MAX_SPREAD_PCT = 0.5        # percent — spread warning threshold
@@ -256,7 +256,7 @@ def _build_snapshot(ticker, args: argparse.Namespace, sec_type: str, data_type: 
         if all(options_out.get(k) is None for k in ("delta", "gamma", "theta", "vega", "iv")):
             warnings.append({"code": "NO_OPTION_GREEKS", "message": "Option Greeks unavailable"})
         if options_out.get("open_interest") is None:
-            warnings.append({"code": "NO_OPEN_INTEREST", "message": "Open interest data unavailable"})
+            warnings.append({"code": "NO_OPEN_INTEREST", "message": "Open interest unavailable"})
 
     # Detect total data blackout: all usable price fields are null
     no_market_data = (bid is None and ask is None and last is None and close is None)
@@ -282,6 +282,9 @@ def _build_snapshot(ticker, args: argparse.Namespace, sec_type: str, data_type: 
     elif no_market_data and session_state == "regular" and not allow_no_data:
         rejected = True
         rejection_reason = "NO_MARKET_DATA"
+    elif bid is None and ask is None and session_state == "regular" and not allow_no_data:
+        rejected = True
+        rejection_reason = "NO_BID_ASK"
     elif order_pct_adv is not None and order_pct_adv > args.hard_reject_order_pct_adv:
         rejected = True
         rejection_reason = "INSUFFICIENT_LIQUIDITY"
@@ -456,6 +459,11 @@ Examples:
     # Quantity for liquidity checks
     parser.add_argument("--quantity", type=float, default=None,
                         help="Proposed order size (enables order-size-as-%%ADV liquidity check)")
+
+    # Market data type
+    parser.add_argument("--delayed", action="store_true",
+                        help="Request delayed market data (type 3); skips live attempt. "
+                             "Use for paper accounts without live data subscriptions.")
 
     # Thresholds
     parser.add_argument("--stale-threshold", type=float, default=DEFAULT_STALE_THRESHOLD,
