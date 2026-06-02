@@ -434,11 +434,13 @@ class TestPostExecutionConfirmation:
         ]
         mock_instance.accountSummaryAsync = AsyncMock(return_value=summary)
         mock_instance.reqAllOpenOrdersAsync = AsyncMock(return_value=[])
+        # Provide valid bid/ask/last so _fetch_pre_trade_snapshot passes the
+        # NO_BID_ASK gate regardless of session state during test runs.
         ticker = MagicMock()
-        ticker.bid = None
-        ticker.ask = None
-        ticker.last = 0.0
-        ticker.close = 0.0
+        ticker.bid = 49.95
+        ticker.ask = 50.05
+        ticker.last = 50.0
+        ticker.close = 49.9
         ticker.halted = 0
         ticker.time = None
         ticker.modelGreeks = None
