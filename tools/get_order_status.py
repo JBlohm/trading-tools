@@ -185,9 +185,15 @@ async def get_order_status(host: str, port: int, client_id: int, order_id: int) 
         return {
             "timestamp": utc_timestamp(),
             "status": "not_found",
+            "lifecycle_state": "not_retained",
             "order_id": order_id,
             "message": (
                 f"No order found with order_id {order_id} in open or completed orders"
+            ),
+            "retention_note": (
+                "IB does not guarantee retention of recently cancelled or completed "
+                "orders in reqCompletedOrders. If cancel_order.py reported Cancelled, "
+                "that outcome is authoritative; this not_found is expected."
             ),
         }
     finally:
@@ -247,8 +253,10 @@ def main() -> None:
         sys.exit(1)
 
     if result.get("status") == "not_found":
-        print(json.dumps(result, indent=2), file=sys.stderr)
-        sys.exit(1)
+        # Exit 2 = order not found (auditable fallback); distinct from exit 1 (connection/error).
+        # Print to stdout so JSON pipelines and audit logs capture the retention_note.
+        print(json.dumps(result, indent=2))
+        sys.exit(2)
 
     print(json.dumps(result, indent=2))
 

@@ -300,6 +300,17 @@ class TestGetOrderStatus:
         assert result["status"] == "not_found"
         assert result["order_id"] == 999
 
+    def test_not_found_has_not_retained_lifecycle_state(self):
+        self._setup_mock_ib(open_trades=[], completed_trades=[])
+        result = asyncio.run(self.mod.get_order_status("127.0.0.1", 7497, 1010, 999))
+        assert result["lifecycle_state"] == "not_retained"
+
+    def test_not_found_has_retention_note(self):
+        self._setup_mock_ib(open_trades=[], completed_trades=[])
+        result = asyncio.run(self.mod.get_order_status("127.0.0.1", 7497, 1010, 999))
+        assert "retention_note" in result
+        assert len(result["retention_note"]) > 0
+
     def test_readonly_connection(self):
         mock_ib = self._setup_mock_ib(open_trades=[_make_trade(order=_make_order(orderId=1))])
         asyncio.run(self.mod.get_order_status("127.0.0.1", 7497, 1010, 1))
@@ -393,16 +404,44 @@ class TestMain:
         err = json.loads(capsys.readouterr().err)
         assert err["status"] == "tws_unavailable"
 
-    def test_not_found_exits_1(self, capsys):
+    def test_not_found_exits_2(self, capsys):
         async def return_not_found(host, port, client_id, order_id):
-            return {"status": "not_found", "order_id": order_id, "message": "not found"}
+            return {
+                "status": "not_found",
+                "lifecycle_state": "not_retained",
+                "order_id": order_id,
+                "message": "not found",
+                "retention_note": "IB does not guarantee retention",
+            }
 
         with patch("sys.argv", ["get_order_status.py", "--order-id", "999"]):
             with patch.object(self.mod, "get_order_status", return_not_found):
                 with pytest.raises(SystemExit) as exc:
                     self.mod.main()
 
-        assert exc.value.code == 1
+        assert exc.value.code == 2
+
+    def test_not_found_prints_to_stdout(self, capsys):
+        async def return_not_found(host, port, client_id, order_id):
+            return {
+                "status": "not_found",
+                "lifecycle_state": "not_retained",
+                "order_id": order_id,
+                "message": "not found",
+                "retention_note": "IB does not guarantee retention",
+            }
+
+        with patch("sys.argv", ["get_order_status.py", "--order-id", "999"]):
+            with patch.object(self.mod, "get_order_status", return_not_found):
+                with pytest.raises(SystemExit):
+                    self.mod.main()
+
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["status"] == "not_found"
+        assert data["lifecycle_state"] == "not_retained"
+        assert "retention_note" in data
+        assert captured.err == ""
 
     def test_success_prints_json_to_stdout(self, capsys):
         async def return_ok(host, port, client_id, order_id):
