@@ -830,3 +830,75 @@ class TestUnavailableFieldWarningCodes:
         with patch.object(mod, "_detect_session_state", return_value="regular"):
             result = asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, args))
         assert not any(w["code"] == "NO_SHORTABLE_SHARES" for w in result["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# All-null quote snapshot (TRA-32)
+# ---------------------------------------------------------------------------
+
+class TestAllNullSnapshot:
+    """Reject orders when all price fields are null during a regular session."""
+
+    def _run(self, session_state="regular", allow_no_data=False, **ticker_overrides):
+        ticker = _make_ticker(**ticker_overrides)  # all fields default to None
+        mock_ib_class, _ = _make_mock_ib(ticker)
+        mod, _ = _inject_fake_ib_async(mock_ib_class)
+        args = _make_args(allow_no_data=allow_no_data)
+        with patch.object(mod, "_detect_session_state", return_value=session_state):
+            return asyncio.run(mod.get_quote_snapshot("127.0.0.1", 7497, 1009, args))
+
+    def test_all_null_regular_session_rejected(self):
+        result = self._run(session_state="regular")
+        assert result["rejected"] is True
+        assert result["rejection_reason"] == "NO_MARKET_DATA"
+
+    def test_all_null_regular_session_no_market_data_warning(self):
+        result = self._run(session_state="regular")
+        assert any(w["code"] == "NO_MARKET_DATA" for w in result["warnings"])
+
+    def test_all_null_premarket_not_rejected_for_no_data(self):
+        result = self._run(session_state="premarket")
+        assert result["rejected"] is False
+
+    def test_all_null_after_hours_not_rejected_for_no_data(self):
+        result = self._run(session_state="after_hours")
+        assert result["rejected"] is False
+
+    def test_all_null_closed_not_rejected_for_no_data(self):
+        result = self._run(session_state="closed")
+        assert result["rejected"] is False
+
+    def test_all_null_regular_with_allow_no_data_not_rejected(self):
+        result = self._run(session_state="regular", allow_no_data=True)
+        assert result["rejected"] is False
+
+    def test_all_null_regular_with_allow_no_data_override_warning(self):
+        result = self._run(session_state="regular", allow_no_data=True)
+        assert any(w["code"] == "OVERRIDE_NO_DATA" for w in result["warnings"])
+
+    def test_partial_data_regular_session_not_rejected_for_no_market_data(self):
+        # last is available → not a total blackout → no NO_MARKET_DATA rejection
+        result = self._run(session_state="regular", last=150.0)
+        assert result["rejection_reason"] != "NO_MARKET_DATA"
+
+    def test_all_null_no_market_data_warning_in_all_sessions(self):
+        # The warning should appear regardless of session; only rejection is session-gated
+        result = self._run(session_state="closed")
+        assert any(w["code"] == "NO_MARKET_DATA" for w in result["warnings"])
+
+    def test_all_null_regular_result_json_serialisable(self):
+        result = self._run(session_state="regular")
+        json.dumps(result)
+
+    def test_allow_no_data_arg_parsed(self):
+        mod, _ = _inject_fake_ib_async()
+        with patch("sys.argv", ["get_quote_snapshot.py", "--symbol", "AAPL",
+                                "--allow-no-data"]):
+            args = mod.parse_args()
+        assert args.allow_no_data is True
+
+    def test_allow_no_data_defaults_to_false(self):
+        mod, _ = _inject_fake_ib_async()
+        with patch("sys.argv", ["get_quote_snapshot.py", "--symbol", "AAPL"]):
+            args = mod.parse_args()
+        assert args.allow_no_data is False

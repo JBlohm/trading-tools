@@ -102,7 +102,8 @@ def _detect_et_session_state() -> str:
 
 
 async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
-                                    quantity, stale_threshold: float) -> dict:
+                                    quantity, stale_threshold: float,
+                                    allow_no_data: bool = False) -> dict:
     """Fetch a market data snapshot for the pre-trade gate and audit record."""
     now_utc = datetime.now(timezone.utc)
     ticker = ib.reqMktData(contract, genericTickList="100,101,106,236",
@@ -155,6 +156,9 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
             ref_price = p
             break
 
+    # Detect total data blackout: all usable price fields are null
+    no_market_data = (bid is None and ask is None and last is None and close is None)
+
     warnings: list[dict] = []
     if is_halted:
         warnings.append({"code": "HALTED",
@@ -177,6 +181,12 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
                          "message": f"Trading in {session_state.replace('_', '-')} session"})
     elif session_state == "closed":
         warnings.append({"code": "CLOSED_SESSION", "message": "Market is closed"})
+    if no_market_data:
+        warnings.append({"code": "NO_MARKET_DATA",
+                         "message": "No usable price data available (bid, ask, last, close are all null)"})
+    if no_market_data and allow_no_data:
+        warnings.append({"code": "OVERRIDE_NO_DATA",
+                         "message": "NO_MARKET_DATA rejection bypassed by --allow-no-data flag"})
 
     rejected = False
     rejection_reason = None
@@ -186,6 +196,9 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
     elif is_stale and (bid is not None or ask is not None):
         rejected = True
         rejection_reason = "STALE_QUOTE"
+    elif no_market_data and session_state == "regular" and not allow_no_data:
+        rejected = True
+        rejection_reason = "NO_MARKET_DATA"
 
     return {
         "symbol": symbol,
@@ -455,9 +468,10 @@ async def place_order(
 
             # --- Pre-trade quote snapshot (always fetched for session/halt/staleness gate) ---
             stale_threshold = getattr(args, "stale_threshold", DEFAULT_STALE_THRESHOLD)
+            allow_no_data = getattr(args, "allow_no_data", False)
             quote_snapshot = await _fetch_pre_trade_snapshot(
                 ib, contract, args.symbol, args.sec_type.upper(),
-                args.quantity, stale_threshold,
+                args.quantity, stale_threshold, allow_no_data,
             )
             if quote_snapshot["rejected"] and not simulation:
                 failure_message = f"Pre-trade snapshot rejected: {quote_snapshot['rejection_reason']}"
@@ -598,6 +612,8 @@ Examples:
     # Snapshot thresholds
     parser.add_argument("--stale-threshold", type=float, default=DEFAULT_STALE_THRESHOLD,
                         help=f"Quote age in seconds before the instrument is considered stale (default: {DEFAULT_STALE_THRESHOLD})")
+    parser.add_argument("--allow-no-data", action="store_true", default=False,
+                        help="Override NO_MARKET_DATA rejection during regular session (auditable; recorded in warnings)")
 
     return parser.parse_args()
 

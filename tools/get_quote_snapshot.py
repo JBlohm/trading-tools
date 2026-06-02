@@ -258,6 +258,17 @@ def _build_snapshot(ticker, args: argparse.Namespace, sec_type: str, data_type: 
         if options_out.get("open_interest") is None:
             warnings.append({"code": "NO_OPEN_INTEREST", "message": "Open interest data unavailable"})
 
+    # Detect total data blackout: all usable price fields are null
+    no_market_data = (bid is None and ask is None and last is None and close is None)
+    allow_no_data = getattr(args, "allow_no_data", False)
+
+    if no_market_data:
+        warnings.append({"code": "NO_MARKET_DATA",
+                         "message": "No usable price data available (bid, ask, last, close are all null)"})
+    if no_market_data and allow_no_data:
+        warnings.append({"code": "OVERRIDE_NO_DATA",
+                         "message": "NO_MARKET_DATA rejection bypassed by --allow-no-data flag"})
+
     # Hard rejection — first match wins
     rejected = False
     rejection_reason = None
@@ -268,6 +279,9 @@ def _build_snapshot(ticker, args: argparse.Namespace, sec_type: str, data_type: 
         # Reject only when we can confirm data is stale (have prices but stale timestamp)
         rejected = True
         rejection_reason = "STALE_QUOTE"
+    elif no_market_data and session_state == "regular" and not allow_no_data:
+        rejected = True
+        rejection_reason = "NO_MARKET_DATA"
     elif order_pct_adv is not None and order_pct_adv > args.hard_reject_order_pct_adv:
         rejected = True
         rejection_reason = "INSUFFICIENT_LIQUIDITY"
@@ -332,13 +346,23 @@ async def get_quote_snapshot(host: str, port: int, client_id: int, args: argpars
     try:
         with contextlib.redirect_stdout(sys.stderr):
             contract = _build_contract(args)
-            await ib.qualifyContractsAsync(contract)
+            qualified = await ib.qualifyContractsAsync(contract)
+            if not qualified or qualified[0] is None:
+                raise ValueError(
+                    f"Contract not found in IB system: {args.symbol} {args.sec_type}"
+                    + (f" {args.expiry} {args.strike} {args.right}" if args.sec_type.upper() in ("OPT", "FOP") else "")
+                    + " — IB Error 200. For paper accounts check options market data API permissions in IB Client Portal."
+                )
+
+            # Request delayed data (type 3) so paper accounts without live
+            # subscriptions return actual quotes instead of all-null snapshots.
+            ib.reqMarketDataType(3)
 
             # Generic tick list: 100=opt_vol, 101=opt_OI, 106=IV, 236=shortable
             ticker = ib.reqMktData(
                 contract,
                 genericTickList="100,101,106,236",
-                snapshot=True,
+                snapshot=False,
                 regulatorySnapshot=False,
             )
 
@@ -412,6 +436,8 @@ Examples:
     parser.add_argument("--hard-reject-order-pct-adv", type=float,
                         default=DEFAULT_HARD_REJECT_ORDER_PCT_ADV,
                         help=f"Order size as %% of ADV hard-reject threshold (default: {DEFAULT_HARD_REJECT_ORDER_PCT_ADV})")
+    parser.add_argument("--allow-no-data", action="store_true", default=False,
+                        help="Override NO_MARKET_DATA rejection during regular session (auditable; recorded in warnings)")
 
     return parser.parse_args()
 
@@ -427,6 +453,16 @@ def main() -> None:
                 "error": str(exc),
                 "status": "tws_unavailable",
                 "hint": "The TWS API is temporarily not available. Please try again later.",
+                "timestamp": utc_timestamp(),
+            }),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except ValueError as exc:
+        print(
+            json.dumps({
+                "error": str(exc),
+                "status": "contract_not_found",
                 "timestamp": utc_timestamp(),
             }),
             file=sys.stderr,
