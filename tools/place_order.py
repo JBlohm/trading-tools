@@ -105,8 +105,6 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
                                     quantity, stale_threshold: float,
                                     allow_no_data: bool = False) -> dict:
     """Fetch a market data snapshot for the pre-trade gate and audit record."""
-    now_utc = datetime.now(timezone.utc)
-
     # Delayed data type lets paper accounts without live subscriptions return
     # actual quotes instead of all-null snapshots.
     ib.reqMarketDataType(3)
@@ -147,6 +145,12 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
             ticker.lastGreeks = getattr(ticker_aux, "lastGreeks", None)
             if ticker.volume is None:
                 ticker.volume = getattr(ticker_aux, "volume", None)
+
+    # Capture now_utc after all market data has arrived so that age_seconds is never
+    # negative: quote_time comes from the IB server and is stamped when the quote is
+    # delivered (during the sleeps above); sampling our clock before those sleeps would
+    # make now_utc < quote_time → negative age.
+    now_utc = datetime.now(timezone.utc)
 
     bid = _safe_float(ticker.bid)
     ask = _safe_float(ticker.ask)

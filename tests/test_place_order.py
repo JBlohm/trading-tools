@@ -993,3 +993,168 @@ class TestPreTradeSnapshotRequestShape:
         snap = result.get("quote_snapshot", {})
         assert snap.get("liquidity", {}).get("adv") == pytest.approx(50_000_000.0)
         assert not any(w["code"] == "NO_ADV" for w in snap.get("warnings", []))
+
+
+# ---------------------------------------------------------------------------
+# Non-negative quote age (TRA-36)
+# ---------------------------------------------------------------------------
+
+class TestNonNegativeQuoteAge:
+    """TRA-36: age_seconds must be >= 0 even when quote_time arrives after function start."""
+
+    def setup_method(self):
+        self.mock_ib_class = MagicMock()
+        self.mod, _ = _inject_fake_ib_async(self.mock_ib_class)
+
+    def _make_mock_ib(self, ticker):
+        mock_ib = MagicMock()
+        mock_ib.reqMktData.return_value = ticker
+        mock_ib.cancelMktData = MagicMock()
+        mock_ib.reqMarketDataType = MagicMock()
+        return mock_ib
+
+    def test_age_non_negative_when_quote_arrives_during_collection(self):
+        """Core TRA-36 fix: now_utc is captured after market data, so quote_time <= now_utc."""
+        from datetime import datetime as RealDatetime, timezone, timedelta
+        from unittest.mock import patch
+
+        T0 = RealDatetime(2026, 6, 2, 13, 32, 14, tzinfo=timezone.utc)
+        SNAP_TIMEOUT = self.mod.SNAPSHOT_TIMEOUT  # 3 s
+
+        clock = [T0]
+
+        # FakeDt subclasses real datetime so isinstance(ticker_time, FakeDt) is True
+        # when the module code checks isinstance(raw_time, datetime) after patching.
+        class FakeDt(RealDatetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock[0]
+
+        async def advancing_sleep(seconds):
+            clock[0] = clock[0] + timedelta(seconds=seconds)
+
+        # Simulate IB delivering a quote during the first sleep: quote_time = T0 + SNAP_TIMEOUT.
+        # ticker_time must be a FakeDt instance so the isinstance check passes when
+        # tools.place_order.datetime is patched to FakeDt.
+        ticker_time = FakeDt(2026, 6, 2, 13, 32, 14 + int(SNAP_TIMEOUT), tzinfo=timezone.utc)
+
+        ticker = MagicMock()
+        ticker.bid = 50.0
+        ticker.ask = 50.1
+        ticker.last = 50.0
+        ticker.close = 49.9
+        ticker.halted = 0
+        ticker.time = ticker_time
+        ticker.avVolume = None
+        ticker.volume = None
+        ticker.modelGreeks = None
+        ticker.lastGreeks = None
+
+        mock_ib = self._make_mock_ib(ticker)
+
+        with patch("asyncio.sleep", side_effect=advancing_sleep), \
+             patch("tools.place_order.datetime", FakeDt):
+            snap = asyncio.run(self.mod._fetch_pre_trade_snapshot(
+                mock_ib, MagicMock(), "AAPL", "STK", 10.0, 60.0
+            ))
+
+        # With the fix: now_utc captured after two sleeps → clock = T0 + 2*SNAP_TIMEOUT.
+        # age = (T0 + 2*SNAP_TIMEOUT) - (T0 + SNAP_TIMEOUT) = SNAP_TIMEOUT > 0.
+        # Without the fix: now_utc = T0 → age = T0 - (T0 + SNAP_TIMEOUT) < 0 (bug).
+        age = snap["staleness"]["age_seconds"]
+        assert age is not None, "age_seconds should not be None when ticker.time is set"
+        assert age >= 0.0, f"TRA-36: age_seconds={age} is negative"
+
+    def test_snapshot_timestamp_at_or_after_quote_time(self):
+        """snapshot_timestamp must be >= quote_time (age reference is post-collection)."""
+        from datetime import datetime as RealDatetime, timezone, timedelta
+        from unittest.mock import patch
+
+        T0 = RealDatetime(2026, 6, 2, 13, 32, 14, tzinfo=timezone.utc)
+        SNAP_TIMEOUT = self.mod.SNAPSHOT_TIMEOUT
+
+        clock = [T0]
+
+        class FakeDt(RealDatetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock[0]
+
+        async def advancing_sleep(seconds):
+            clock[0] = clock[0] + timedelta(seconds=seconds)
+
+        ticker_time = FakeDt(2026, 6, 2, 13, 32, 14 + int(SNAP_TIMEOUT), tzinfo=timezone.utc)
+
+        ticker = MagicMock()
+        ticker.bid = 50.0
+        ticker.ask = 50.1
+        ticker.last = 50.0
+        ticker.close = 49.9
+        ticker.halted = 0
+        ticker.time = ticker_time
+        ticker.avVolume = None
+        ticker.volume = None
+        ticker.modelGreeks = None
+        ticker.lastGreeks = None
+
+        mock_ib = self._make_mock_ib(ticker)
+
+        with patch("asyncio.sleep", side_effect=advancing_sleep), \
+             patch("tools.place_order.datetime", FakeDt):
+            snap = asyncio.run(self.mod._fetch_pre_trade_snapshot(
+                mock_ib, MagicMock(), "AAPL", "STK", 10.0, 60.0
+            ))
+
+        snap_ts = snap["snapshot_timestamp"]
+        quote_ts = snap["quote"]["quote_time"]
+        assert snap_ts >= quote_ts, (
+            f"snapshot_timestamp ({snap_ts}) is before quote_time ({quote_ts})"
+        )
+
+    def test_stale_detection_still_works_after_fix(self):
+        """Regression: moving now_utc must not break stale quote detection."""
+        from datetime import datetime as RealDatetime, timezone, timedelta
+        from unittest.mock import patch
+
+        T0 = RealDatetime(2026, 6, 2, 13, 32, 14, tzinfo=timezone.utc)
+        SNAP_TIMEOUT = self.mod.SNAPSHOT_TIMEOUT
+        STALE_THRESHOLD = 60.0
+
+        clock = [T0]
+
+        class FakeDt(RealDatetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock[0]
+
+        async def advancing_sleep(seconds):
+            clock[0] = clock[0] + timedelta(seconds=seconds)
+
+        # Quote is 120s old at function-start time; now_utc is captured 6s later
+        # → age = 126s > 60s threshold → still flagged stale.
+        stale_ticker_time = FakeDt(2026, 6, 2, 13, 30, 14, tzinfo=timezone.utc)  # T0 - 120s
+
+        ticker = MagicMock()
+        ticker.bid = 50.0
+        ticker.ask = 50.1
+        ticker.last = 50.0
+        ticker.close = 49.9
+        ticker.halted = 0
+        ticker.time = stale_ticker_time
+        ticker.avVolume = None
+        ticker.volume = None
+        ticker.modelGreeks = None
+        ticker.lastGreeks = None
+
+        mock_ib = self._make_mock_ib(ticker)
+
+        with patch("asyncio.sleep", side_effect=advancing_sleep), \
+             patch("tools.place_order.datetime", FakeDt):
+            snap = asyncio.run(self.mod._fetch_pre_trade_snapshot(
+                mock_ib, MagicMock(), "AAPL", "STK", 10.0, STALE_THRESHOLD
+            ))
+
+        assert snap["staleness"]["is_stale"] is True, "stale quote must still be detected"
+        assert snap["staleness"]["age_seconds"] >= 0.0, "age_seconds must be non-negative"
+        assert snap["rejected"] is True
+        assert snap["rejection_reason"] == "STALE_QUOTE"
