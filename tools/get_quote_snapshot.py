@@ -282,7 +282,10 @@ def _build_snapshot(ticker, args: argparse.Namespace, sec_type: str, data_type: 
     elif no_market_data and session_state == "regular" and not allow_no_data:
         rejected = True
         rejection_reason = "NO_MARKET_DATA"
-    elif bid is None and ask is None and session_state == "regular" and not allow_no_data:
+    elif bid is None and ask is None and session_state == "regular" and not no_market_data:
+        # Partial-data case: last/close present but no bid/ask.
+        # --allow-no-data only bypasses total-data blackout (NO_MARKET_DATA); it does
+        # not override this guard, which must remain independent of that flag.
         rejected = True
         rejection_reason = "NO_BID_ASK"
     elif order_pct_adv is not None and order_pct_adv > args.hard_reject_order_pct_adv:
