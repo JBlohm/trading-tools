@@ -7,7 +7,7 @@ Crash Playbook / Liquidity Breakdown strategy. Outputs human-readable text follo
 by a fenced JSON block for LLM consumption. Read-only: never places, modifies, or
 cancels orders.
 
-Connection ID: 1012 (see tools/connection_ids.json)
+Connection ID: 1018 (see tools/connection_ids.json)
 
 Exit codes:
   0 — signal computed (may be no_setup)
@@ -51,7 +51,7 @@ except ImportError:
 DEFAULT_HOST = "192.168.2.187"
 PORT_PAPER = 7497
 PORT_LIVE = 7496
-CLIENT_ID = 1012
+CLIENT_ID = 1018
 CONNECT_TIMEOUT = 15
 BAR_TIMEOUT = 30
 MIN_PRIMARY_BARS = 260
