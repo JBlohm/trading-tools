@@ -4,7 +4,7 @@ Reads historical daily market data from TWS via `ib_async` and evaluates the PTJ
 
 **Read-only**: never places, modifies, or cancels orders.
 
-Connection ID: **1012** (read-only, see `tools/connection_ids.json`)
+Connection ID: **1018** (read-only, see `tools/connection_ids.json`)
 
 ## Signal States
 
