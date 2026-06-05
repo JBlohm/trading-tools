@@ -50,6 +50,7 @@ def _inject_fake_ib_async(mock_ib_class=None):
     fake.Stock = MagicMock(return_value=MagicMock())
     fake.Future = MagicMock(return_value=MagicMock())
     fake.Contract = MagicMock(return_value=MagicMock())
+    fake.Index = MagicMock(return_value=MagicMock())
     sys.modules["ib_async"] = fake
     for key in list(sys.modules):
         if "tools.detect_crash_liquidity_breakdown" in key or "detect_crash_liquidity_breakdown" == key:
@@ -416,11 +417,16 @@ class TestEvaluateCrashPlaybook:
         result = self.mod.evaluate_crash_playbook(features)
         assert result["signal_state"] == "entry_trigger_short"
 
-    def test_entry_trigger_requires_failed_retest(self):
-        features = self._crash_features(failed_retest=False)
+    def test_entry_trigger_requires_failed_retest_or_range_expansion(self):
+        features = self._crash_features(failed_retest=False, tr_expansion=False)
         result = self.mod.evaluate_crash_playbook(features)
-        # Without failed retest, should not be entry trigger
+        # Without failed retest or decisive range expansion, should not be entry trigger
         assert result["signal_state"] != "entry_trigger_short"
+
+    def test_entry_trigger_allows_decisive_range_expansion(self):
+        features = self._crash_features(failed_retest=False, tr_expansion=True)
+        result = self.mod.evaluate_crash_playbook(features)
+        assert result["signal_state"] == "entry_trigger_short"
 
     def test_entry_trigger_requires_two_confirmations(self):
         # Only volatility confirmed, no breadth or credit
@@ -448,7 +454,7 @@ class TestEvaluateCrashPlaybook:
             shelf_break=False,
             failed_retest=False,
             vix_confirmation=True,
-            tr_expansion=True,
+            tr_expansion=False,
             breadth_weak=True,
         )
         result = self.mod.evaluate_crash_playbook(features)
@@ -941,6 +947,7 @@ class TestTWSAdapter:
         )
         result = asyncio.run(self.mod.run_detector("127.0.0.1", 7497, args))
         assert "signal_state" in result
+        self.mod.Index.assert_called_once_with("VIX", "CBOE", "USD")
 
     def test_result_from_adapter_is_json_serialisable(self):
         import asyncio
