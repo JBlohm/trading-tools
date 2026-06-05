@@ -860,6 +860,17 @@ class TestAllNullSnapshotRiskGate:
         assert result["status"] == "risk_check_failed"
         assert result["quote_snapshot"]["rejection_reason"] == "NO_BID_ASK"
 
+    def test_partial_data_with_allow_no_data_still_rejected_for_no_bid_ask(self):
+        # --allow-no-data must not bypass NO_BID_ASK when partial data (last/close) exists.
+        # That flag is scoped to total-data blackout only.
+        self._setup_mock_ib(ticker_kwargs={"last": 100.0, "close": 99.0})
+        args = _make_args(quantity=1.0, limit_price=50.0, order_type="LMT",
+                          max_notional=100_000, max_pct_nlv=10.0, allow_no_data=True)
+        with patch.object(self.mod, "_detect_et_session_state", return_value="regular"):
+            result = asyncio.run(self.mod.place_order("127.0.0.1", 7497, 1004, args))
+        assert result["status"] == "risk_check_failed"
+        assert result["quote_snapshot"]["rejection_reason"] == "NO_BID_ASK"
+
 
 # ---------------------------------------------------------------------------
 # Request shape (TRA-33): two-request pattern in _fetch_pre_trade_snapshot

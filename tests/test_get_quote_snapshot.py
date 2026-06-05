@@ -886,6 +886,13 @@ class TestAllNullSnapshot:
         assert result["rejected"] is True
         assert result["rejection_reason"] == "NO_BID_ASK"
 
+    def test_partial_data_with_allow_no_data_still_rejected_for_no_bid_ask(self):
+        # --allow-no-data must not bypass NO_BID_ASK when partial data (last/close) exists.
+        # That flag is scoped to total-data blackout only.
+        result = self._run(session_state="regular", allow_no_data=True, last=150.0, close=149.0)
+        assert result["rejected"] is True
+        assert result["rejection_reason"] == "NO_BID_ASK"
+
     def test_all_null_no_market_data_warning_in_all_sessions(self):
         # The warning should appear regardless of session; only rejection is session-gated
         result = self._run(session_state="closed")
