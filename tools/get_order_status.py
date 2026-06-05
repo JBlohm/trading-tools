@@ -169,18 +169,33 @@ async def get_order_status(host: str, port: int, client_id: int, order_id: int) 
 
         # Not in open orders — check completed orders (filled, recently cancelled)
         completed_trades = []
+        completed_orders_error = None
         try:
             with contextlib.redirect_stdout(sys.stderr):
                 completed_trades = await asyncio.wait_for(
                     ib.reqCompletedOrdersAsync(apiOnly=False),
                     timeout=COMPLETED_ORDERS_TIMEOUT,
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            completed_orders_error = str(exc) or type(exc).__name__
 
         for trade in completed_trades:
             if trade.order.orderId == order_id:
                 return _trade_to_status_dict(trade, "completed_orders")
+
+        if completed_orders_error:
+            # Completed orders lookup failed — status is unknown, not authoritatively not_retained.
+            return {
+                "timestamp": utc_timestamp(),
+                "status": "lookup_error",
+                "lifecycle_state": "unknown",
+                "order_id": order_id,
+                "message": (
+                    f"Order {order_id} not found in open orders; "
+                    "completed orders lookup failed — lifecycle status is unknown"
+                ),
+                "completed_orders_error": completed_orders_error,
+            }
 
         return {
             "timestamp": utc_timestamp(),
@@ -257,6 +272,11 @@ def main() -> None:
         # Print to stdout so JSON pipelines and audit logs capture the retention_note.
         print(json.dumps(result, indent=2))
         sys.exit(2)
+
+    if result.get("status") == "lookup_error":
+        # Exit 3 = completed-orders lookup failed; lifecycle is unknown, not authoritatively not_retained.
+        print(json.dumps(result, indent=2))
+        sys.exit(3)
 
     print(json.dumps(result, indent=2))
 
