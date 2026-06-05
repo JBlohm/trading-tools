@@ -54,7 +54,7 @@ python tools/detect_crash_liquidity_breakdown.py [options]
 | `--currency CUR` | `USD` | Currency |
 | `--exchange EXCH` | `SMART` | Exchange |
 | `--expiry YYYYMM` | | Contract expiry (FUT only) |
-| `--vix-symbol SYMBOL` | | Volatility index symbol, e.g. `VIX` |
+| `--vix-symbol SYMBOL` | | Volatility index symbol, e.g. `VIX` (IB index contract) |
 | `--credit-symbol SYMBOL` | | Credit proxy ETF, e.g. `HYG` or `JNK` |
 | `--breadth-symbol SYMBOL` | | Breadth proxy ETF, e.g. `RSP` |
 | `--shelf-lookback N` | `63` | Session lookback for support shelf |
