@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 try:
-    from ib_async import IB, Stock, Future, Contract
+    from ib_async import IB, Stock, Future, Contract, Index
 except ImportError:
     print(
         json.dumps(
@@ -411,11 +411,11 @@ def evaluate_crash_playbook(
 
     if (
         price_broken
-        and features.get("failed_retest")
         and confirmations >= 2
         and not features.get("gap_down_open")
+        and (features.get("failed_retest") or features.get("tr_expansion"))
     ):
-        # Entry trigger: break + failed retest + ≥2 confirmations, no gap open
+        # Entry trigger: break + failed retest or decisive range expansion + ≥2 confirmations, no gap open
         confidence = min(0.92, 0.60 + confirmations * 0.10 + (0.08 if features.get("lower_high") else 0))
         confidence *= max(0.5, 1.0 - len(missing) * 0.10)
         state = "entry_trigger_short"
@@ -727,7 +727,7 @@ async def run_detector(host: str, port: int, args) -> dict:
 
         vix_bars = None
         if args.vix_symbol:
-            vix_contract = Stock(args.vix_symbol, "CBOE", "USD")
+            vix_contract = Index(args.vix_symbol, "CBOE", "USD")
             vix_bars = await asyncio.wait_for(
                 _fetch_daily_bars(ib, vix_contract), timeout=BAR_TIMEOUT
             )
