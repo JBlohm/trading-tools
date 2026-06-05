@@ -141,6 +141,40 @@ git pull
 
 That's all you need. No credentials, no GitHub account required.
 
+
+## Tools
+
+| Tool | Description | Read-only |
+|------|-------------|-----------|
+| `get_positions.py` | Current TWS positions | ✓ |
+| `get_greeks.py` | Portfolio-level option Greeks | ✓ |
+| `get_margin_usage.py` | Account margin usage | ✓ |
+| `get_open_orders.py` | Open/pending orders | ✓ |
+| `get_quote_snapshot.py` | Pre-trade quote, session, and liquidity snapshot | ✓ |
+| `get_risk_breaches.py` | Portfolio risk limit breach detector | ✓ |
+| `get_order_status.py` | Order lifecycle status and fill details | ✓ |
+| `monitor_stops.py` | Stop and target order monitor | ✓ |
+| `detect_crash_liquidity_breakdown.py` | PTJ Crash Playbook / Liquidity Breakdown signal detector | ✓ |
+| `trade_proposal.py` | Structured trade proposal with pre-trade checks | — |
+| `place_order.py` | Place orders with pre-trade risk gate | — |
+| `cancel_order.py` | Cancel open orders | — |
+| `modify_order.py` | Modify existing orders | — |
+| `flatten_position.py` | Emergency position flatten | — |
+
+## Docs
+
+| Document | Covers |
+|----------|--------|
+| `docs/get_positions.md` | Position reader |
+| `docs/get_greeks.md` | Greeks reader |
+| `docs/get_margin_usage.md` | Margin usage reader |
+| `docs/get_open_orders.md` | Open orders reader |
+| `docs/get_quote_snapshot.md` | Quote snapshot |
+| `docs/place_order.md` | Order placement |
+| `docs/cancel_order.md` | Order cancellation |
+| `docs/detect_crash_liquidity_breakdown.md` | Crash playbook detector — thresholds, JSON schema, failure modes |
+
+---
 ---
 
 ## Team Summary
