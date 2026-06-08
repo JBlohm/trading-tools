@@ -526,6 +526,40 @@ class TestEvaluateCrashPlaybook:
         result = self.mod.evaluate_crash_playbook(features, policy_context=policy)
         assert result["signal_state"] == "de_risk_exit"
 
+    # --- Bug fixes: regression tests ---
+
+    def test_risk_high_stop_fires_without_entry_price(self):
+        # Bug fix: close above risk_high must trigger de_risk_exit even when entry_price is omitted
+        features = self._good_features(close=320.0)
+        pos = {"position_side": "short", "risk_high": 310.0}  # no entry_price
+        result = self.mod.evaluate_crash_playbook(features, position_context=pos)
+        assert result["signal_state"] == "de_risk_exit"
+        assert result["reason"] == "close_above_risk_high"
+
+    def test_risk_high_stop_not_fired_below_risk_high_without_entry_price(self):
+        # risk_high stop must NOT fire when close is still below the stop level
+        features = self._good_features(close=300.0)
+        pos = {"position_side": "short", "risk_high": 310.0}  # no entry_price
+        result = self.mod.evaluate_crash_playbook(features, position_context=pos)
+        assert result["signal_state"] != "de_risk_exit"
+
+    def test_open_short_with_crash_features_gives_management_not_entry(self):
+        # Bug fix: when already short and the market remains in crash mode (failed retest +
+        # confirmations >= 2), output must be manage_open_short, not entry_trigger_short.
+        features = self._crash_features()
+        pos = {"position_side": "short", "entry_price": 300.0, "risk_high": 310.0}
+        result = self.mod.evaluate_crash_playbook(features, position_context=pos)
+        assert result["signal_state"] == "manage_open_short", (
+            f"Expected manage_open_short for existing short in crash env, got {result['signal_state']}"
+        )
+        assert any("trail" in a for a in result["actions"])
+
+    def test_entry_trigger_still_fires_when_flat(self):
+        # Sanity: entry_trigger_short must still fire for a new (flat) position in crash conditions
+        features = self._crash_features()
+        result = self.mod.evaluate_crash_playbook(features)  # no position_context
+        assert result["signal_state"] == "entry_trigger_short"
+
     # --- degraded confidence with missing data ---
     def test_missing_optional_data_lowers_confidence(self):
         full_features = self._crash_features()
