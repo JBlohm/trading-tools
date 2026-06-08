@@ -412,18 +412,19 @@ def evaluate_crash_playbook(
     price_broken = features.get("shelf_break")
     price_deteriorating = features.get("below_support_shelf") or features.get("below_200dma")
 
-    # Manage an open short before checking for new entry signals — an existing position
-    # in a still-bearish market should receive management actions, not entry actions.
-    if position_side == "short" and price_deteriorating:
-        profitable = (entry_price is not None and features.get("close", 0) < entry_price)
-        if profitable and features.get("lower_high"):
-            confidence = 0.80 * max(0.5, 1.0 - len(missing) * 0.10)
-            state = "manage_open_short"
-            posture = "trail_stop_above_lower_high"
-        else:
-            confidence = 0.50
-            state = "watchlist_deterioration"
-            posture = "monitor_closely"
+    # Manage an open short only when it is profitable with a lower high intact.
+    # Non-manageable shorts (underwater or no lower_high) fall through to the entry
+    # signal chain so a confirmed crash setup is not downgraded to watchlist_deterioration.
+    if (
+        position_side == "short"
+        and price_deteriorating
+        and entry_price is not None
+        and features.get("close", 0) < entry_price
+        and features.get("lower_high")
+    ):
+        confidence = 0.80 * max(0.5, 1.0 - len(missing) * 0.10)
+        state = "manage_open_short"
+        posture = "trail_stop_above_lower_high"
 
     elif (
         price_broken

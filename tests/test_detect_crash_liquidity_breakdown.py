@@ -590,6 +590,28 @@ class TestEvaluateCrashPlaybook:
         result = self.mod.evaluate_crash_playbook(features)  # no position_context
         assert result["signal_state"] == "entry_trigger_short"
 
+    def test_underwater_short_in_crash_setup_preserves_entry_trigger(self):
+        # Regression: underwater short (close >= entry_price) must not be downgraded to
+        # watchlist_deterioration when a full crash setup is active.
+        features = self._crash_features(close=310.0)  # close above entry_price → underwater
+        pos = {"position_side": "short", "entry_price": 300.0, "risk_high": 320.0}
+        result = self.mod.evaluate_crash_playbook(features, position_context=pos)
+        assert result["signal_state"] in ("entry_trigger_short", "setup_armed"), (
+            f"Underwater short in crash setup must preserve crash signal, got {result['signal_state']}"
+        )
+        assert result["signal_state"] != "watchlist_deterioration"
+
+    def test_short_without_lower_high_in_crash_setup_preserves_signal(self):
+        # Regression: a short that lacks lower_high (incomplete position) must not be
+        # downgraded to watchlist_deterioration when a full crash setup is active.
+        features = self._crash_features(lower_high=False)
+        pos = {"position_side": "short", "entry_price": 300.0, "risk_high": 310.0}
+        result = self.mod.evaluate_crash_playbook(features, position_context=pos)
+        assert result["signal_state"] in ("entry_trigger_short", "setup_armed"), (
+            f"Short without lower_high in crash setup must preserve crash signal, got {result['signal_state']}"
+        )
+        assert result["signal_state"] != "watchlist_deterioration"
+
     # --- degraded confidence with missing data ---
     def test_missing_optional_data_lowers_confidence(self):
         full_features = self._crash_features()
