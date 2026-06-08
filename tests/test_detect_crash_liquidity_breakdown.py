@@ -466,6 +466,36 @@ class TestEvaluateCrashPlaybook:
         assert result["signal_state"] != "entry_trigger_short"
         assert result["signal_state"] == "setup_armed"
 
+    def test_below_200dma_without_shelf_break_never_entry_trigger(self):
+        # Below 200DMA alone must NOT allow entry_trigger_short, even with failed retest
+        # and 2+ confirmations. The docs require a shelf break for entry.
+        features = self._good_features(
+            close=280.0,
+            below_200dma=True,
+            below_support_shelf=True,
+            shelf_break=False,
+            failed_retest=True,
+            tr_expansion=True,
+            vix_confirmation=True,
+            breadth_weak=True,
+            credit_below_50dma=True,
+            gap_down_open=False,
+        )
+        result = self.mod.evaluate_crash_playbook(features)
+        assert result["signal_state"] != "entry_trigger_short", (
+            "below_200dma without shelf_break must not produce entry_trigger_short"
+        )
+        assert result["signal_state"] == "setup_armed"
+
+    def test_shelf_break_required_for_entry_trigger(self):
+        # shelf_break=True should produce entry_trigger; shelf_break=False should not
+        features_with_break = self._crash_features(shelf_break=True, failed_retest=True, gap_down_open=False)
+        features_no_break = self._crash_features(shelf_break=False, failed_retest=True, gap_down_open=False)
+        result_with = self.mod.evaluate_crash_playbook(features_with_break)
+        result_without = self.mod.evaluate_crash_playbook(features_no_break)
+        assert result_with["signal_state"] == "entry_trigger_short"
+        assert result_without["signal_state"] != "entry_trigger_short"
+
     # --- watchlist_deterioration ---
     def test_watchlist_with_partial_deterioration(self):
         features = self._good_features(

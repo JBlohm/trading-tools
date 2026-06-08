@@ -406,7 +406,8 @@ def evaluate_crash_playbook(
             )
 
     # Primary signal evaluation
-    price_broken = features.get("shelf_break") or features.get("below_200dma")
+    # entry_trigger_short requires an actual shelf break; 200DMA-only is setup_armed territory
+    price_broken = features.get("shelf_break")
     price_deteriorating = features.get("below_support_shelf") or features.get("below_200dma")
 
     if (
