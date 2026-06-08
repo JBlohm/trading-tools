@@ -237,7 +237,10 @@ async def _fetch_pre_trade_snapshot(ib, contract, symbol: str, sec_type: str,
     elif no_market_data and session_state == "regular" and not allow_no_data:
         rejected = True
         rejection_reason = "NO_MARKET_DATA"
-    elif bid is None and ask is None and session_state == "regular" and not allow_no_data:
+    elif bid is None and ask is None and session_state == "regular" and not no_market_data:
+        # Partial-data case: last/close present but no bid/ask.
+        # --allow-no-data only bypasses total-data blackout (NO_MARKET_DATA); it does
+        # not override this guard, which must remain independent of that flag.
         rejected = True
         rejection_reason = "NO_BID_ASK"
 

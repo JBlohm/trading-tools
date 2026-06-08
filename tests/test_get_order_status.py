@@ -354,12 +354,14 @@ class TestGetOrderStatus:
         with pytest.raises(ConnectionError, match="Cannot reach TWS"):
             asyncio.run(self.mod.get_order_status("127.0.0.1", 7497, 1010, 1))
 
-    def test_completed_orders_error_does_not_raise(self):
-        # If reqCompletedOrdersAsync throws, we fall through to not_found gracefully
+    def test_completed_orders_error_returns_lookup_error(self):
+        # If reqCompletedOrdersAsync throws, we surface the lookup failure explicitly.
         mock_ib = self._setup_mock_ib()
         mock_ib.reqCompletedOrdersAsync = AsyncMock(side_effect=Exception("timeout"))
         result = asyncio.run(self.mod.get_order_status("127.0.0.1", 7497, 1010, 999))
-        assert result["status"] == "not_found"
+        assert result["status"] == "lookup_error"
+        assert result["lifecycle_state"] == "unknown"
+        assert result["completed_orders_error"] == "timeout"
 
 
 class TestArgParsing:
@@ -420,6 +422,23 @@ class TestMain:
                     self.mod.main()
 
         assert exc.value.code == 2
+
+    def test_lookup_error_exits_3(self, capsys):
+        async def return_lookup_error(host, port, client_id, order_id):
+            return {
+                "status": "lookup_error",
+                "lifecycle_state": "unknown",
+                "order_id": order_id,
+                "message": "lookup failed",
+                "completed_orders_error": "timeout",
+            }
+
+        with patch("sys.argv", ["get_order_status.py", "--order-id", "999"]):
+            with patch.object(self.mod, "get_order_status", return_lookup_error):
+                with pytest.raises(SystemExit) as exc:
+                    self.mod.main()
+
+        assert exc.value.code == 3
 
     def test_not_found_prints_to_stdout(self, capsys):
         async def return_not_found(host, port, client_id, order_id):
