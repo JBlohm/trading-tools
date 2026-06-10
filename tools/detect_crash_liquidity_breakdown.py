@@ -374,8 +374,9 @@ def evaluate_crash_playbook(
     risk_high = pos.get("risk_high")
 
     # De-risk exits for open shorts
-    if position_side == "short" and entry_price is not None:
+    if position_side == "short":
         close = features.get("close", 0.0)
+        # risk_high stop does not require entry_price — price comparison is self-contained
         if risk_high is not None and close > risk_high:
             return _build_result(
                 state="de_risk_exit",
@@ -389,28 +390,43 @@ def evaluate_crash_playbook(
                 confidence=0.95,
                 missing=missing,
             )
-        # Volatility compression: VIX well below warning level (two-session proxy)
-        vix = features.get("vix_level")
-        if vix is not None and vix < 20.0:
-            return _build_result(
-                state="de_risk_exit",
-                scorecard=scorecard,
-                market_snap=market_snap,
-                data_quality=data_quality,
-                pos=pos,
-                features=features,
-                reason="volatility_compressed",
-                posture="reduce_short",
-                confidence=0.75,
-                missing=missing,
-            )
+        if entry_price is not None:
+            # Volatility compression: VIX well below warning level (two-session proxy)
+            vix = features.get("vix_level")
+            if vix is not None and vix < 20.0:
+                return _build_result(
+                    state="de_risk_exit",
+                    scorecard=scorecard,
+                    market_snap=market_snap,
+                    data_quality=data_quality,
+                    pos=pos,
+                    features=features,
+                    reason="volatility_compressed",
+                    posture="reduce_short",
+                    confidence=0.75,
+                    missing=missing,
+                )
 
     # Primary signal evaluation
     # entry_trigger_short requires an actual shelf break; 200DMA-only is setup_armed territory
     price_broken = features.get("shelf_break")
     price_deteriorating = features.get("below_support_shelf") or features.get("below_200dma")
 
+    # Manage an open short only when it is profitable with a lower high intact.
+    # Non-manageable shorts (underwater or no lower_high) fall through to the entry
+    # signal chain so a confirmed crash setup is not downgraded to watchlist_deterioration.
     if (
+        position_side == "short"
+        and price_deteriorating
+        and entry_price is not None
+        and features.get("close", 0) < entry_price
+        and features.get("lower_high")
+    ):
+        confidence = 0.80 * max(0.5, 1.0 - len(missing) * 0.10)
+        state = "manage_open_short"
+        posture = "trail_stop_above_lower_high"
+
+    elif (
         price_broken
         and confirmations >= 2
         and not features.get("gap_down_open")
@@ -434,18 +450,6 @@ def evaluate_crash_playbook(
         confidence *= max(0.5, 1.0 - len(missing) * 0.10)
         state = "setup_armed"
         posture = "prepare_short_entry"
-
-    elif position_side == "short" and price_deteriorating and entry_price is not None:
-        # Managing an open short: market still bearish
-        profitable = (features.get("close", 0) < entry_price)
-        if profitable and features.get("lower_high"):
-            confidence = 0.80 * max(0.5, 1.0 - len(missing) * 0.10)
-            state = "manage_open_short"
-            posture = "trail_stop_above_lower_high"
-        else:
-            confidence = 0.50
-            state = "watchlist_deterioration"
-            posture = "monitor_closely"
 
     elif price_deteriorating or vol_warned or confirmations >= 1:
         # Watchlist: some deterioration but not enough for full setup
