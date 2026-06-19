@@ -24,7 +24,7 @@ stop and exit rules. Report results in a structured CSV and summary Markdown.
 4. Aggregate metrics: win rate (5%+ downside within 20 bars), average trade return,
    Sharpe ratio of simulated strategy, max drawdown
 5. Episode hit-check: coverage of 2018-Q4 selloff, 2020 COVID crash, 2022 bear market —
-   verify signals fired during each
+   report stress detection and tradable entry triggers separately
 
 **Achievable**
 - All indicator logic already exists in the tool; backtest reuses it directly.

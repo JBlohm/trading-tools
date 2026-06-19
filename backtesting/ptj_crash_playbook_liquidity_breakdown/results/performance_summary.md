@@ -1,6 +1,6 @@
 # Backtest Results: PTJ Crash Playbook / Liquidity Breakdown
 
-**Run date:** 2026-06-19 09:09 UTC
+**Run date:** 2026-06-19 09:54 UTC
 **Backtest period:** 2015-01-01 – 2025-06-01  (walk-forward, entry at next bar open)
 **Instruments:** SPY (primary), ^VIX, HYG (credit), RSP (breadth)
 **Parameters:** strategy defaults — shelf_lookback=63, break_threshold=0.005
@@ -29,7 +29,7 @@
 
 | Horizon | N | Mean | Median | Std | Win >5% | Loss >5% | Best | Worst |
 |---------|---|------|--------|-----|---------|----------|------|-------|
-| 5d | 10 | 1.041% | 1.867% | 2.61% | 0.0% | 10.0% | 4.066% | -5.167% |
+| 5d | 10 | 1.041% | 1.867% | 2.61% | 0.0% | 10.0% | 4.066% | -5.168% |
 | 10d | 10 | -0.41% | -0.468% | 3.542% | 0.0% | 10.0% | 4.664% | -9.187% |
 | 20d | 10 | -1.305% | -1.044% | 5.3% | 10.0% | 30.0% | 8.546% | -11.021% |
 
@@ -40,8 +40,8 @@
 - **Total trades:** 10
 - **Win rate:** 40.0% (positive P&L)
 - **Average return:** 0.005%
-- **Median return:** -0.903%
-- **Best trade:** 7.943%
+- **Median return:** -0.902%
+- **Best trade:** 7.942%
 - **Worst trade:** -2.999%
 - **Average hold:** 9.6 bars
 - **Sharpe ratio (annualised):** -6.76
@@ -57,7 +57,7 @@
 | 2020 COVID Crash | 2020-02-19 – 2020-03-23 | 0 | 19 | YES | NO |
 | 2022 Bear Market | 2022-01-04 – 2022-10-13 | 4 | 69 | YES | YES |
 
-> **Note on 2020 COVID Crash:** The detector correctly identified stress (19 `setup_armed` days), but the V-shaped crash was too fast for a failed-retest pattern to form — no `entry_trigger_short` fired during the crash window. The strategy's structural requirement (shelf break → bounce → failed retest) was not met during the acute Feb–Mar 2020 drawdown. This is behaviorally correct: the PTJ playbook requires a *failed retest*, not just a crash.
+> **Note on stress-only episodes:** A `setup_armed` reading means liquidity stress was detected, but it is not a tradable entry by itself. The strategy requires a failed retest and an `entry_trigger_short`; stress-only episodes should be treated as watchlist/triage signals, not completed short setups.
 
 ---
 

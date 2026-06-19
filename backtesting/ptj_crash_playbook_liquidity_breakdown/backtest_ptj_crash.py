@@ -613,6 +613,15 @@ def _write_summary_md(metrics: dict) -> None:
             f"{v['setup_armed_days']} | {stress} | {triggered} |"
         )
 
+    if any(v["stress_detected"] and not v["entry_triggered"] for v in metrics["episode_hits"].values()):
+        lines += [
+            "",
+            "> **Note on stress-only episodes:** A `setup_armed` reading means liquidity stress was detected, "
+            "but it is not a tradable entry by itself. The strategy requires a failed retest and "
+            "an `entry_trigger_short`; stress-only episodes should be treated as watchlist/triage "
+            "signals, not completed short setups.",
+        ]
+
     lines += [
         "",
         "---",
