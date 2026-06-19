@@ -51,11 +51,13 @@
 
 ## Known Crash Episode Coverage
 
-| Episode | Period | Entry Trigger Days | Setup Armed Days | Hit? |
-|---------|--------|-------------------|-----------------|------|
-| 2018-Q4 Selloff | 2018-10-01 – 2018-12-24 | 2 | 32 | YES |
-| 2020 COVID Crash | 2020-02-19 – 2020-03-23 | 0 | 19 | YES |
-| 2022 Bear Market | 2022-01-04 – 2022-10-13 | 4 | 69 | YES |
+| Episode | Period | Entry Trigger Days | Setup Armed Days | Stress Detected? | Entry Triggered? |
+|---------|--------|-------------------|-----------------|-----------------|-----------------|
+| 2018-Q4 Selloff | 2018-10-01 – 2018-12-24 | 2 | 32 | YES | YES |
+| 2020 COVID Crash | 2020-02-19 – 2020-03-23 | 0 | 19 | YES | NO |
+| 2022 Bear Market | 2022-01-04 – 2022-10-13 | 4 | 69 | YES | YES |
+
+> **Note on 2020 COVID Crash:** The detector correctly identified stress (19 `setup_armed` days), but the V-shaped crash was too fast for a failed-retest pattern to form — no `entry_trigger_short` fired during the crash window. The strategy's structural requirement (shelf break → bounce → failed retest) was not met during the acute Feb–Mar 2020 drawdown. This is behaviorally correct: the PTJ playbook requires a *failed retest*, not just a crash.
 
 ---
 

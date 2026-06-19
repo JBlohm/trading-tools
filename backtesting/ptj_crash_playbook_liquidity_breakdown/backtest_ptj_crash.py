@@ -464,7 +464,8 @@ def compute_metrics(results: dict, spy_bars: list) -> dict:
             "period": f"{ep_start} – {ep_end}",
             "entry_trigger_days": len(entry_triggers),
             "setup_armed_days": len(ep_signals) - len(entry_triggers),
-            "hit": len(ep_signals) > 0,
+            "stress_detected": len(ep_signals) > 0,
+            "entry_triggered": len(entry_triggers) > 0,
         }
 
     return {
@@ -601,14 +602,15 @@ def _write_summary_md(metrics: dict) -> None:
         "",
         "## Known Crash Episode Coverage",
         "",
-        "| Episode | Period | Entry Trigger Days | Setup Armed Days | Hit? |",
-        "|---------|--------|-------------------|-----------------|------|",
+        "| Episode | Period | Entry Trigger Days | Setup Armed Days | Stress Detected? | Entry Triggered? |",
+        "|---------|--------|-------------------|-----------------|-----------------|-----------------|",
     ]
     for ep, v in metrics["episode_hits"].items():
-        hit_emoji = "YES" if v["hit"] else "MISS"
+        stress = "YES" if v["stress_detected"] else "NO"
+        triggered = "YES" if v["entry_triggered"] else "NO"
         lines.append(
             f"| {ep} | {v['period']} | {v['entry_trigger_days']} | "
-            f"{v['setup_armed_days']} | {hit_emoji} |"
+            f"{v['setup_armed_days']} | {stress} | {triggered} |"
         )
 
     lines += [
@@ -718,9 +720,9 @@ def main() -> None:
 
     print("\nEpisode coverage:")
     for ep, v in metrics["episode_hits"].items():
-        hit = "HIT" if v["hit"] else "MISS"
+        triggered = "ENTRY" if v["entry_triggered"] else ("STRESS" if v["stress_detected"] else "MISS")
         print(
-            f"  [{hit:4s}] {ep}: "
+            f"  [{triggered:6s}] {ep}: "
             f"{v['entry_trigger_days']} entry trigger + "
             f"{v['setup_armed_days']} setup_armed days"
         )

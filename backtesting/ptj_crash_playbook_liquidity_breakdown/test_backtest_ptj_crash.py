@@ -475,7 +475,8 @@ class TestComputeMetrics:
         for ep_name in bt.EPISODES:
             assert ep_name in metrics["episode_hits"]
             ep = metrics["episode_hits"][ep_name]
-            assert "hit" in ep
+            assert "stress_detected" in ep
+            assert "entry_triggered" in ep
             assert "entry_trigger_days" in ep
             assert "setup_armed_days" in ep
 
