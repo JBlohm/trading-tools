@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -126,7 +127,7 @@ def _fetch_via_http(ticker: str, start: str, end: str, max_retries: int = 3) -> 
     start_ts = int(pd.Timestamp(start).timestamp())
     end_ts = int(pd.Timestamp(end).timestamp())
     url = (
-        f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}"
+        f"https://query2.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker, safe='')}"
         f"?interval=1d&period1={start_ts}&period2={end_ts}&events=adjsplit"
     )
     headers = {
@@ -670,7 +671,7 @@ def main() -> None:
     print(f"  SPY:  {len(spy_df)} bars  ({spy_df['date'].iloc[0].date()} – {spy_df['date'].iloc[-1].date()})")
     time.sleep(0.5)
 
-    vix_df = _yf_fetch("%5EVIX", START_DATE, END_DATE)
+    vix_df = _yf_fetch("^VIX", START_DATE, END_DATE)
     print(f"  ^VIX: {len(vix_df)} bars  ({vix_df['date'].iloc[0].date()} – {vix_df['date'].iloc[-1].date()})")
     time.sleep(0.5)
 
