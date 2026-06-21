@@ -662,7 +662,10 @@ def _retest_long_features(confirms: int = 3) -> dict:
 
 
 class TestRegimeFilter:
-    """Regime filter: long entry blocked when above_200dma or ma200_slope_up is False."""
+    """Regime filter: long entry blocked when above_200dma is False.
+    ma200_slope_up is NOT a hard gate — it counts toward long_confirmations
+    but does not independently block entry (recovery breakouts precede slope reversal).
+    """
 
     def test_regime_filter_blocks_long_when_below_200dma(self):
         features = {**_retest_long_features(), "above_200dma": False}
@@ -671,14 +674,17 @@ class TestRegimeFilter:
             "Long entry must be blocked when price is below the 200-day MA"
         )
 
-    def test_regime_filter_blocks_long_when_ma200_slope_down(self):
+    def test_regime_filter_ma200_slope_not_a_hard_gate(self):
+        # ma200_slope_up=False alone must NOT block the entry trigger.
+        # Recovery breakouts happen before the slope turns positive.
         features = {**_retest_long_features(), "ma200_slope_up": False}
         result = evaluate_breakout_signal(features)
-        assert result["signal_state"] != "entry_trigger_long", (
-            "Long entry must be blocked when 200-day MA slope is negative"
+        assert result["signal_state"] == "entry_trigger_long", (
+            "ma200_slope_up=False must not independently block entry_trigger_long; "
+            "it contributes to confirmation count only"
         )
 
-    def test_regime_filter_passes_when_both_conditions_met(self):
+    def test_regime_filter_passes_when_above_200dma(self):
         features = _retest_long_features()
         result = evaluate_breakout_signal(features)
         assert result["signal_state"] == "entry_trigger_long"
@@ -696,17 +702,31 @@ class TestVolumeExpansionGate:
     """Volume expansion is a hard gate for both long and short entry triggers."""
 
     def test_volume_expansion_required_for_long_entry(self):
-        features = {**_retest_long_features(), "volume_expansion": False}
+        # Neither today nor yesterday expanded → blocked
+        features = {**_retest_long_features(), "volume_expansion": False, "volume_expansion_prev": False}
         result = evaluate_breakout_signal(features)
         assert result["signal_state"] != "entry_trigger_long", (
-            "Long entry must be blocked when volume is not expanding"
+            "Long entry must be blocked when neither today nor yesterday had volume expansion"
         )
 
     def test_volume_expansion_none_blocks_long_entry(self):
-        features = {**_retest_long_features(), "volume_expansion": None}
+        # Both None (data unavailable) → blocked
+        features = {**_retest_long_features(), "volume_expansion": None, "volume_expansion_prev": None}
         result = evaluate_breakout_signal(features)
         assert result["signal_state"] != "entry_trigger_long", (
             "Long entry must be blocked when volume expansion is unavailable (None)"
+        )
+
+    def test_volume_expansion_prev_allows_entry(self):
+        # Today's volume flat but yesterday (breakout day) expanded → allowed
+        features = {
+            **_retest_long_features(),
+            "volume_expansion": False,      # today: normal volume
+            "volume_expansion_prev": True,  # yesterday (breakout day): expanded
+        }
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] == "entry_trigger_long", (
+            "Long entry must be allowed when breakout-day (previous bar) volume expanded"
         )
 
     def test_volume_expansion_required_for_short_entry(self):

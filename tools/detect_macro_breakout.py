@@ -34,7 +34,7 @@ RANGE_MODERATE_PCT = 0.10   # range_width / range_mid < 10% → moderate compres
 ATR_PERIOD_SHORT = 20       # short ATR period
 ATR_PERIOD_LONG = 60        # long ATR period for compression ratio
 ATR_COMPRESS_RATIO = 0.85   # ATR_short/ATR_long < 0.85 → compression
-VOL_EXPANSION_MULT = 1.5    # volume > 1.5x 20-day avg → expansion
+VOL_EXPANSION_MULT = 1.2    # volume > 1.2x 20-day avg → expansion (retest days naturally lower)
 MA_LONG = 200               # long-term trend filter
 MA_MEDIUM = 50              # medium-term trend filter
 MA_SLOPE_LOOKBACK = 10      # bars to measure MA slope
@@ -260,12 +260,18 @@ def calculate_indicators(
         features["failed_breakout_short"] = False
 
     # -------------------------------------------------------------------
-    # Volume expansion
+    # Volume expansion (today and previous bar)
+    # For retest-hold entries, breakout-day volume (prev bar) counts equally.
     # -------------------------------------------------------------------
     avg_vol = _sma(volumes[:-1], ATR_PERIOD_SHORT)
     features["volume_expansion"] = (
         (volumes[-1] > avg_vol * VOL_EXPANSION_MULT)
         if (avg_vol and avg_vol > 0)
+        else None
+    )
+    features["volume_expansion_prev"] = (
+        (volumes[-2] > avg_vol * VOL_EXPANSION_MULT)
+        if (avg_vol and avg_vol > 0 and len(volumes) >= 2)
         else None
     )
 
@@ -484,16 +490,18 @@ def evaluate_breakout_signal(
 
     # -------------------------------------------------------------------
     # Hard gates for entry triggers
-    # Regime: only long when SPY above 200dma AND slope positive (None → pass)
-    # Volume: volume_expansion must be True (explicit True, not just truthy)
-    # Credit: credit_supportive must not be False when data available (None → pass)
+    # Regime: only long when SPY above 200dma (None → pass; ma200_slope_up is
+    #         a confirmation count contributor, not a hard gate — recovery
+    #         breakouts trigger before the slope turns positive).
+    # Volume: expanded on today OR previous bar (breakout day); 1.2x threshold.
+    # Credit: credit_supportive must not be False when data available (None → pass).
     # -------------------------------------------------------------------
-    regime_ok_long = (
-        features.get("above_200dma") is not False
-        and features.get("ma200_slope_up") is not False
-    )
+    regime_ok_long = features.get("above_200dma") is not False
     credit_ok_long = features.get("credit_supportive") is not False
-    volume_ok = features.get("volume_expansion") is True
+    volume_ok = (
+        features.get("volume_expansion") is True
+        or features.get("volume_expansion_prev") is True
+    )
 
     # -------------------------------------------------------------------
     # Entry trigger: retest hold (two-step — REQUIRED for entry trigger)
