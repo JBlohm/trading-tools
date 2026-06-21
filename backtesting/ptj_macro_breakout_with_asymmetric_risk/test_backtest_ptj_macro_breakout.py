@@ -462,7 +462,14 @@ class TestEntryTriggerLong:
         }
 
     def test_entry_trigger_long_fires(self):
-        result = evaluate_breakout_signal(self._long_breakout_features(confirms=3))
+        # Retest hold is now required; add retest + regime features
+        features = {
+            **self._long_breakout_features(confirms=3),
+            "retest_hold_long": True,
+            "above_200dma": True,
+            "ma200_slope_up": True,
+        }
+        result = evaluate_breakout_signal(features)
         assert result["signal_state"] == "entry_trigger_long"
 
     def test_no_entry_without_enough_confirms(self):
@@ -532,7 +539,9 @@ class TestEntryTriggerShort:
         }
 
     def test_entry_trigger_short_fires(self):
-        result = evaluate_breakout_signal(self._short_features())
+        # Retest hold is now required for entry trigger
+        features = {**self._short_features(), "retest_hold_short": True}
+        result = evaluate_breakout_signal(features)
         assert result["signal_state"] == "entry_trigger_short"
 
     def test_gap_down_blocks_short_entry(self):
@@ -622,6 +631,180 @@ class TestTrailStop:
         ctx = {"position_side": "long", "entry_price": 100.0, "stop_level": 94.0, "r_unit": 3.0}
         result = evaluate_breakout_signal(features, position_context=ctx)
         assert result["signal_state"] == "trail_stop"
+
+
+# ---------------------------------------------------------------------------
+# New hard-gate tests (TRA-62 confirmation-refinement pass)
+# ---------------------------------------------------------------------------
+
+def _retest_long_features(confirms: int = 3) -> dict:
+    """Full retest-hold long feature set that should fire entry_trigger_long."""
+    return {
+        "range_tight": True,
+        "range_moderate": True,
+        "atr_compressed": True,
+        "long_confirmations": confirms,
+        "short_confirmations": 0,
+        "breakout_long": True,
+        "breakout_short": False,
+        "retest_hold_long": True,
+        "retest_hold_short": False,
+        "volume_expansion": True,
+        "gap_up_open": False,
+        "gap_down_open": False,
+        "failed_breakout_long": False,
+        "failed_breakout_short": False,
+        "above_200dma": True,
+        "ma200_slope_up": True,
+        "credit_supportive": True,
+        "credit_deteriorating": False,
+    }
+
+
+class TestRegimeFilter:
+    """Regime filter: long entry blocked when above_200dma or ma200_slope_up is False."""
+
+    def test_regime_filter_blocks_long_when_below_200dma(self):
+        features = {**_retest_long_features(), "above_200dma": False}
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] != "entry_trigger_long", (
+            "Long entry must be blocked when price is below the 200-day MA"
+        )
+
+    def test_regime_filter_blocks_long_when_ma200_slope_down(self):
+        features = {**_retest_long_features(), "ma200_slope_up": False}
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] != "entry_trigger_long", (
+            "Long entry must be blocked when 200-day MA slope is negative"
+        )
+
+    def test_regime_filter_passes_when_both_conditions_met(self):
+        features = _retest_long_features()
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] == "entry_trigger_long"
+
+    def test_regime_filter_passes_when_values_none(self):
+        # None means data unavailable; filter should not block
+        features = {**_retest_long_features()}
+        features.pop("above_200dma", None)
+        features.pop("ma200_slope_up", None)
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] == "entry_trigger_long"
+
+
+class TestVolumeExpansionGate:
+    """Volume expansion is a hard gate for both long and short entry triggers."""
+
+    def test_volume_expansion_required_for_long_entry(self):
+        features = {**_retest_long_features(), "volume_expansion": False}
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] != "entry_trigger_long", (
+            "Long entry must be blocked when volume is not expanding"
+        )
+
+    def test_volume_expansion_none_blocks_long_entry(self):
+        features = {**_retest_long_features(), "volume_expansion": None}
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] != "entry_trigger_long", (
+            "Long entry must be blocked when volume expansion is unavailable (None)"
+        )
+
+    def test_volume_expansion_required_for_short_entry(self):
+        short_features = {
+            "range_tight": True,
+            "range_moderate": True,
+            "atr_compressed": True,
+            "long_confirmations": 0,
+            "short_confirmations": 3,
+            "breakout_long": False,
+            "breakout_short": True,
+            "retest_hold_long": False,
+            "retest_hold_short": True,
+            "volume_expansion": False,
+            "gap_up_open": False,
+            "gap_down_open": False,
+            "failed_breakout_long": False,
+            "failed_breakout_short": False,
+        }
+        result = evaluate_breakout_signal(short_features)
+        assert result["signal_state"] != "entry_trigger_short", (
+            "Short entry must be blocked when volume is not expanding"
+        )
+
+
+class TestCreditConfirmationGate:
+    """Credit confirmation is a hard gate for long entries when data is available."""
+
+    def test_credit_blocks_long_when_not_supportive(self):
+        features = {**_retest_long_features(), "credit_supportive": False}
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] != "entry_trigger_long", (
+            "Long entry must be blocked when credit is available but not supportive"
+        )
+
+    def test_credit_passes_long_when_supportive(self):
+        features = {**_retest_long_features(), "credit_supportive": True}
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] == "entry_trigger_long"
+
+    def test_credit_passes_long_when_unavailable(self):
+        # credit_supportive = None means HYG data not provided; should not block
+        features = {**_retest_long_features(), "credit_supportive": None}
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] == "entry_trigger_long", (
+            "Long entry must NOT be blocked when credit data is unavailable"
+        )
+
+
+class TestSingleStepBreakoutDowngrade:
+    """Single-step breakout must be downgraded to breakout_candidate, not entry_trigger."""
+
+    def test_single_step_long_becomes_breakout_candidate(self):
+        # Compressed + confirms + breakout but NO retest_hold
+        features = {
+            "range_tight": True,
+            "range_moderate": True,
+            "atr_compressed": True,
+            "long_confirmations": 3,
+            "short_confirmations": 0,
+            "breakout_long": True,
+            "breakout_short": False,
+            "retest_hold_long": False,
+            "retest_hold_short": False,
+            "volume_expansion": True,
+            "gap_up_open": False,
+            "gap_down_open": False,
+            "failed_breakout_long": False,
+            "failed_breakout_short": False,
+        }
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] == "breakout_candidate", (
+            "Single-step breakout without retest hold must be downgraded to breakout_candidate"
+        )
+        assert result["signal_state"] != "entry_trigger_long"
+
+    def test_single_step_short_becomes_breakout_candidate(self):
+        features = {
+            "range_tight": True,
+            "range_moderate": True,
+            "atr_compressed": True,
+            "long_confirmations": 0,
+            "short_confirmations": 3,
+            "breakout_long": False,
+            "breakout_short": True,
+            "retest_hold_long": False,
+            "retest_hold_short": False,
+            "volume_expansion": True,
+            "gap_up_open": False,
+            "gap_down_open": False,
+            "failed_breakout_long": False,
+            "failed_breakout_short": False,
+        }
+        result = evaluate_breakout_signal(features)
+        assert result["signal_state"] == "breakout_candidate", (
+            "Single-step short breakout without retest hold must be downgraded to breakout_candidate"
+        )
+        assert result["signal_state"] != "entry_trigger_short"
 
 
 # ---------------------------------------------------------------------------

@@ -40,8 +40,8 @@ MA_MEDIUM = 50              # medium-term trend filter
 MA_SLOPE_LOOKBACK = 10      # bars to measure MA slope
 CONFIRM_LOOKBACK = 5        # bars for confirmation asset momentum
 CONFIRM_THRESHOLD = 0.005   # |momentum| > 0.5% to count as a signal
-MIN_CONFIRMS_LONG = 2       # macro confirms needed for long entry
-MIN_CONFIRMS_SHORT = 2      # macro confirms needed for short entry
+MIN_CONFIRMS_LONG = 3       # macro confirms needed for long entry
+MIN_CONFIRMS_SHORT = 3      # macro confirms needed for short entry
 GAP_THRESHOLD = 0.005       # 0.5% gap to exclude entry direction
 RETEST_TOLERANCE = 0.005    # 0.5% tolerance when checking retest hold
 
@@ -483,12 +483,29 @@ def evaluate_breakout_signal(
                 return _result("add_unit", 0.70, scorecard, "add_short_continuation")
 
     # -------------------------------------------------------------------
-    # Entry trigger: retest hold (two-step confirmation — higher confidence)
+    # Hard gates for entry triggers
+    # Regime: only long when SPY above 200dma AND slope positive (None → pass)
+    # Volume: volume_expansion must be True (explicit True, not just truthy)
+    # Credit: credit_supportive must not be False when data available (None → pass)
+    # -------------------------------------------------------------------
+    regime_ok_long = (
+        features.get("above_200dma") is not False
+        and features.get("ma200_slope_up") is not False
+    )
+    credit_ok_long = features.get("credit_supportive") is not False
+    volume_ok = features.get("volume_expansion") is True
+
+    # -------------------------------------------------------------------
+    # Entry trigger: retest hold (two-step — REQUIRED for entry trigger)
+    # Hard gates: regime filter, volume expansion, credit confirmation
     # -------------------------------------------------------------------
     if (
         features.get("retest_hold_long")
         and long_confirms >= MIN_CONFIRMS_LONG
         and not features.get("gap_down_open")
+        and regime_ok_long
+        and volume_ok
+        and credit_ok_long
     ):
         conf = 0.65 + min(long_confirms * 0.05, 0.25) + (0.05 if scorecard["volume_expansion"] else 0)
         return _result("entry_trigger_long", min(conf, 0.95), scorecard, "two_step_long")
@@ -497,13 +514,14 @@ def evaluate_breakout_signal(
         features.get("retest_hold_short")
         and short_confirms >= MIN_CONFIRMS_SHORT
         and not features.get("gap_up_open")
+        and volume_ok
     ):
         conf = 0.65 + min(short_confirms * 0.05, 0.25) + (0.05 if scorecard["volume_expansion"] else 0)
         return _result("entry_trigger_short", min(conf, 0.95), scorecard, "two_step_short")
 
     # -------------------------------------------------------------------
-    # Entry trigger: breakout close (first-step — probe size)
-    # Requires: compression + confirms + breakout + no adverse gap
+    # Single-step breakout: downgrade to breakout_candidate
+    # Retest hold required for entry; single-step = watching for retest
     # -------------------------------------------------------------------
     compressed = scorecard["range_compressed"] >= 1 or scorecard["atr_compressed"] >= 1
 
@@ -511,10 +529,13 @@ def evaluate_breakout_signal(
         compressed
         and scorecard["breakout_long"]
         and long_confirms >= MIN_CONFIRMS_LONG
-        and not features.get("gap_up_open")  # no chasing a gap breakout
+        and not features.get("gap_up_open")
     ):
-        conf = 0.50 + min(long_confirms * 0.04, 0.25) + (0.05 if scorecard["volume_expansion"] else 0)
-        return _result("entry_trigger_long", min(conf, 0.85), scorecard, "breakout_close_long")
+        conf = 0.45 + min(long_confirms * 0.04, 0.20)
+        return _result(
+            "breakout_candidate", min(conf, 0.70),
+            {**scorecard, "dominant_side": "long"}, "single_step_long",
+        )
 
     if (
         compressed
@@ -522,8 +543,11 @@ def evaluate_breakout_signal(
         and short_confirms >= MIN_CONFIRMS_SHORT
         and not features.get("gap_down_open")
     ):
-        conf = 0.50 + min(short_confirms * 0.04, 0.25) + (0.05 if scorecard["volume_expansion"] else 0)
-        return _result("entry_trigger_short", min(conf, 0.85), scorecard, "breakout_close_short")
+        conf = 0.45 + min(short_confirms * 0.04, 0.20)
+        return _result(
+            "breakout_candidate", min(conf, 0.70),
+            {**scorecard, "dominant_side": "short"}, "single_step_short",
+        )
 
     # -------------------------------------------------------------------
     # Breakout candidate: watching, not yet triggering
