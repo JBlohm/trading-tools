@@ -350,25 +350,34 @@ def run_backtest_model(
                     if (close - entry) >= r_unit * bt.PARTIAL_PROFIT_R:
                         open_trade["partial_taken"] = True
                         partial_ret = (close * (1 - bt.SLIPPAGE) - entry) / entry
+                        current = open_trade.get("current_size", bt.POSITION_SIZE)
+                        partial_size = current * bt.PARTIAL_FRACTION
                         trade_log.append(bt._trade_row(
                             open_trade, today_date, close * (1 - bt.SLIPPAGE),
                             "partial_profit_long", bars_held,
-                            partial_ret, bt.POSITION_SIZE * bt.PARTIAL_FRACTION,
+                            partial_ret, partial_size,
                         ))
-                        open_trade["current_size"] = bt.POSITION_SIZE * (1 - bt.PARTIAL_FRACTION)
+                        open_trade["current_size"] = current * (1 - bt.PARTIAL_FRACTION)
                         open_trade["stop_level"] = entry
+                        # Keep pre_event_size in sync so restore gives correct un-halved exposure
+                        if model == "event_risk" and open_trade.get("halved_for_event") and "pre_event_size" in open_trade:
+                            open_trade["pre_event_size"] = open_trade["pre_event_size"] * (1 - bt.PARTIAL_FRACTION)
 
                 elif side == "short" and not partial_taken and r_unit:
                     if (entry - close) >= r_unit * bt.PARTIAL_PROFIT_R:
                         open_trade["partial_taken"] = True
                         partial_ret = (entry - close * (1 + bt.SLIPPAGE)) / entry
+                        current = open_trade.get("current_size", bt.POSITION_SIZE)
+                        partial_size = current * bt.PARTIAL_FRACTION
                         trade_log.append(bt._trade_row(
                             open_trade, today_date, close * (1 + bt.SLIPPAGE),
                             "partial_profit_short", bars_held,
-                            partial_ret, bt.POSITION_SIZE * bt.PARTIAL_FRACTION,
+                            partial_ret, partial_size,
                         ))
-                        open_trade["current_size"] = bt.POSITION_SIZE * (1 - bt.PARTIAL_FRACTION)
+                        open_trade["current_size"] = current * (1 - bt.PARTIAL_FRACTION)
                         open_trade["stop_level"] = entry
+                        if model == "event_risk" and open_trade.get("halved_for_event") and "pre_event_size" in open_trade:
+                            open_trade["pre_event_size"] = open_trade["pre_event_size"] * (1 - bt.PARTIAL_FRACTION)
 
             if exit_reason and exit_price:
                 size = open_trade.get("current_size", bt.POSITION_SIZE)

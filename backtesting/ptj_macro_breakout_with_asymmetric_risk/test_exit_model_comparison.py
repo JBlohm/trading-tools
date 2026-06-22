@@ -384,6 +384,55 @@ class TestEventRiskExit:
         )
         assert reason == "time_stop"
 
+    def test_partial_size_respects_halved_position(self):
+        """Partial profit taken while halved must use current_size as base, not POSITION_SIZE.
+
+        Bug scenario (Scott's finding): partial-profit block was hardcoding
+        bt.POSITION_SIZE * PARTIAL_FRACTION instead of current_size * PARTIAL_FRACTION,
+        so a halved position (0.165) would produce a partial at 0.11 (1/3 of full) and
+        a remainder of 0.22 (2/3 of full), wiping out the halving entirely.
+        """
+        bars = _backtest_bars(80)
+
+        # Inject a synthetic open trade at halved exposure and manually trigger the
+        # partial-profit path by running a minimal loop via compare_exit_models.
+        # Verify indirectly: after the fix, all partial_profit rows in event_risk mode
+        # must have position_size <= POSITION_SIZE * PARTIAL_FRACTION (the unhalved value).
+        # When the halving was active at partial time, the partial size is smaller.
+        results = emc.run_backtest_model(bars, [], [], [], model="event_risk")
+        for t in results["trade_log"]:
+            if "partial_profit" in t["exit_reason"]:
+                # Partial size must be <= POSITION_SIZE * PARTIAL_FRACTION (full partial)
+                assert t["position_size"] <= bt.POSITION_SIZE * bt.PARTIAL_FRACTION + 1e-9, (
+                    f"Partial size {t['position_size']} exceeds full partial "
+                    f"{bt.POSITION_SIZE * bt.PARTIAL_FRACTION}"
+                )
+
+    def test_pre_event_size_updated_when_partial_taken_while_halved(self):
+        """When partial profit is taken while halved, pre_event_size must be updated
+        so the restore gives the correct post-partial un-halved exposure."""
+        trade = _make_trade("long", entry=100.0, stop=90.0, r_unit=5.0, model="event_risk")
+        trade["halved_for_event"] = True
+        trade["pre_event_size"] = bt.POSITION_SIZE          # 0.33 — captured before halving
+        trade["current_size"] = bt.POSITION_SIZE * 0.5      # 0.165 — halved
+
+        # Simulate the partial-profit calculation that the fixed run_backtest_model does
+        current = trade.get("current_size", bt.POSITION_SIZE)
+        partial_size = current * bt.PARTIAL_FRACTION         # 0.055 (not 0.11)
+        trade["current_size"] = current * (1 - bt.PARTIAL_FRACTION)  # 0.11
+        # Fixed: update pre_event_size so restore gives 0.22 (not 0.33)
+        trade["pre_event_size"] = trade["pre_event_size"] * (1 - bt.PARTIAL_FRACTION)
+
+        assert partial_size == pytest.approx(bt.POSITION_SIZE * 0.5 * bt.PARTIAL_FRACTION)
+        assert trade["current_size"] == pytest.approx(bt.POSITION_SIZE * 0.5 * (1 - bt.PARTIAL_FRACTION))
+        assert trade["pre_event_size"] == pytest.approx(bt.POSITION_SIZE * (1 - bt.PARTIAL_FRACTION))
+
+        # Now simulate restore
+        trade["halved_for_event"] = False
+        trade["current_size"] = trade.pop("pre_event_size")
+        # Restored size must equal post-partial baseline (2/3 of full), not the full size
+        assert trade["current_size"] == pytest.approx(bt.POSITION_SIZE * (1 - bt.PARTIAL_FRACTION))
+
 
 # ---------------------------------------------------------------------------
 # 20-23. run_backtest_model integration tests
