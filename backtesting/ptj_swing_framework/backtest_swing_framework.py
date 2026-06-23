@@ -87,10 +87,12 @@ IS_CUTOFF = "2020-01-01"
 WARMUP_BARS = 220
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
+DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(RESULTS_DIR, exist_ok=True)
+os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# Data fetching (identical pattern to existing backtest)
+# Data fetching with disk cache and 429-aware retry
 # ---------------------------------------------------------------------------
 
 try:
@@ -99,37 +101,94 @@ try:
 except ImportError:
     _HAS_YF = False
 
+# Backoff schedule for HTTP errors: maps HTTP status → wait seconds before retry.
+# 429 Too Many Requests warrants a long wait; other errors use shorter backoff.
+_HTTP_BACKOFF = {429: 60, 500: 10, 503: 30}
+_DEFAULT_BACKOFF = 5
+_INTER_REQUEST_DELAY = 2  # seconds between successive successful fetches
 
-def _yf_fetch(ticker: str, start: str, end: str, max_retries: int = 3) -> pd.DataFrame:
+
+def _cache_path(ticker: str, start: str, end: str) -> str:
+    safe = ticker.replace("/", "_")
+    return os.path.join(DATA_CACHE_DIR, f"{safe}_{start}_{end}.csv")
+
+
+def _load_cache(ticker: str, start: str, end: str) -> "pd.DataFrame | None":
+    path = _cache_path(ticker, start, end)
+    if not os.path.exists(path):
+        return None
+    try:
+        df = pd.read_csv(path, parse_dates=["date"])
+        if df.empty or "close" not in df.columns:
+            return None
+        print(f"    (cached: {path})")
+        return df
+    except Exception:
+        return None
+
+
+def _save_cache(df: pd.DataFrame, ticker: str, start: str, end: str) -> None:
+    path = _cache_path(ticker, start, end)
+    try:
+        df.to_csv(path, index=False)
+    except Exception:
+        pass
+
+
+def _yf_fetch(ticker: str, start: str, end: str, max_retries: int = 5,
+              use_cache: bool = True) -> pd.DataFrame:
+    if use_cache:
+        cached = _load_cache(ticker, start, end)
+        if cached is not None:
+            return cached
+
+    df = None
     if _HAS_YF:
-        return _fetch_via_yfinance(ticker, start, end)
-    return _fetch_via_http(ticker, start, end, max_retries)
-
-
-def _fetch_via_yfinance(ticker: str, start: str, end: str) -> pd.DataFrame:
-    df_raw = _yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
-    if df_raw.empty:
-        raise RuntimeError(f"yfinance returned empty data for {ticker}")
-    if isinstance(df_raw.columns, pd.MultiIndex):
-        df_raw.columns = [c[0].lower() for c in df_raw.columns]
+        df = _fetch_via_yfinance(ticker, start, end, max_retries)
     else:
-        df_raw.columns = [c.lower() for c in df_raw.columns]
-    if "adj close" in df_raw.columns:
-        df_raw = df_raw.rename(columns={"adj close": "close"})
-    df = pd.DataFrame({
-        "date": df_raw.index,
-        "open": df_raw["open"].values,
-        "high": df_raw["high"].values,
-        "low": df_raw["low"].values,
-        "close": df_raw["close"].values,
-        "volume": df_raw.get("volume", pd.Series([0] * len(df_raw))).values,
-    })
-    df = df.dropna(subset=["close"]).reset_index(drop=True)
-    df["date"] = pd.to_datetime(df["date"])
-    return df.sort_values("date").reset_index(drop=True)
+        df = _fetch_via_http(ticker, start, end, max_retries)
+
+    if use_cache and df is not None and not df.empty:
+        _save_cache(df, ticker, start, end)
+    return df
 
 
-def _fetch_via_http(ticker: str, start: str, end: str, max_retries: int = 3) -> pd.DataFrame:
+def _fetch_via_yfinance(ticker: str, start: str, end: str,
+                        max_retries: int = 5) -> pd.DataFrame:
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            df_raw = _yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+            if df_raw.empty:
+                raise RuntimeError(f"yfinance returned empty data for {ticker}")
+            if isinstance(df_raw.columns, pd.MultiIndex):
+                df_raw.columns = [c[0].lower() for c in df_raw.columns]
+            else:
+                df_raw.columns = [c.lower() for c in df_raw.columns]
+            if "adj close" in df_raw.columns:
+                df_raw = df_raw.rename(columns={"adj close": "close"})
+            df = pd.DataFrame({
+                "date": df_raw.index,
+                "open": df_raw["open"].values,
+                "high": df_raw["high"].values,
+                "low": df_raw["low"].values,
+                "close": df_raw["close"].values,
+                "volume": df_raw.get("volume", pd.Series([0] * len(df_raw))).values,
+            })
+            df = df.dropna(subset=["close"]).reset_index(drop=True)
+            df["date"] = pd.to_datetime(df["date"])
+            return df.sort_values("date").reset_index(drop=True)
+        except Exception as exc:
+            last_err = exc
+            wait = _DEFAULT_BACKOFF * (2 ** attempt)
+            if attempt < max_retries - 1:
+                print(f"    yfinance error ({exc}), retry {attempt + 1}/{max_retries} in {wait}s ...")
+                time.sleep(wait)
+    raise RuntimeError(f"Failed to fetch {ticker} via yfinance after {max_retries} attempts: {last_err}")
+
+
+def _fetch_via_http(ticker: str, start: str, end: str, max_retries: int = 5) -> pd.DataFrame:
+    import urllib.error
     start_ts = int(pd.Timestamp(start).timestamp())
     end_ts = int(pd.Timestamp(end).timestamp())
     url = (
@@ -172,11 +231,20 @@ def _fetch_via_http(ticker: str, start: str, end: str, max_retries: int = 3) -> 
             df = df.dropna(subset=["close"]).reset_index(drop=True)
             df["date"] = pd.to_datetime(df["date"])
             return df.sort_values("date").reset_index(drop=True)
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            last_err = exc
+            wait = _HTTP_BACKOFF.get(status, _DEFAULT_BACKOFF * (2 ** attempt))
+            print(f"    HTTP {status} for {ticker}, retry {attempt + 1}/{max_retries} in {wait}s ...")
+            if attempt < max_retries - 1:
+                time.sleep(wait)
         except Exception as exc:
             last_err = exc
+            wait = _DEFAULT_BACKOFF * (2 ** attempt)
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-    raise RuntimeError(f"Failed to fetch {ticker}: {last_err}")
+                print(f"    fetch error ({exc}), retry {attempt + 1}/{max_retries} in {wait}s ...")
+                time.sleep(wait)
+    raise RuntimeError(f"Failed to fetch {ticker} after {max_retries} attempts: {last_err}")
 
 
 def _df_to_bars(df: pd.DataFrame) -> list:
@@ -654,22 +722,42 @@ def write_results(portfolio: Portfolio) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
-    print(f"Fetching data for {len(SYMBOLS)} symbols + 3 macro bars ...")
-    all_bars: dict[str, list] = {}
+import argparse as _argparse
 
-    for sym in SYMBOLS:
+
+def main():
+    parser = _argparse.ArgumentParser(
+        description="Run the PTJ Swing Framework 6-symbol walk-forward backtest.",
+    )
+    parser.add_argument(
+        "--refresh", action="store_true",
+        help="Ignore cached data and re-fetch from Yahoo Finance.",
+    )
+    args = parser.parse_args()
+    use_cache = not args.refresh
+
+    all_tickers = list(SYMBOLS) + list(MACRO_SYMBOLS.values())
+    print(f"Fetching data for {len(all_tickers)} tickers (cache={'enabled' if use_cache else 'disabled'}) ...")
+    print(f"  Cache dir: {DATA_CACHE_DIR}")
+    print()
+
+    all_bars: dict[str, list] = {}
+    for i, sym in enumerate(SYMBOLS):
         print(f"  {sym} ... ", end="", flush=True)
-        df = _yf_fetch(sym, START_DATE, END_DATE)
+        df = _yf_fetch(sym, START_DATE, END_DATE, use_cache=use_cache)
         all_bars[sym] = _df_to_bars(df)
         print(f"{len(all_bars[sym])} bars")
+        if i < len(SYMBOLS) - 1:
+            time.sleep(_INTER_REQUEST_DELAY)
 
     macro_bars: dict[str, list] = {}
-    for key, sym in MACRO_SYMBOLS.items():
+    for i, (key, sym) in enumerate(MACRO_SYMBOLS.items()):
         print(f"  {sym} (macro/{key}) ... ", end="", flush=True)
-        df = _yf_fetch(sym, START_DATE, END_DATE)
+        df = _yf_fetch(sym, START_DATE, END_DATE, use_cache=use_cache)
         macro_bars[key] = _df_to_bars(df)
         print(f"{len(macro_bars[key])} bars")
+        if i < len(MACRO_SYMBOLS) - 1:
+            time.sleep(_INTER_REQUEST_DELAY)
 
     print()
     print("Running backtest ...")
