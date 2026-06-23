@@ -277,6 +277,64 @@ class TestEvaluateSymbol:
         )
         assert result["decision"] == "SKIP"
 
+    def test_add_uses_real_sizing_not_bypassed(self):
+        """ADD decision must use compute_position_size, not bypass constraints."""
+        from unittest.mock import patch
+        from tools.swing_strategy import MIN_POSITION_SHARES
+
+        bars = _make_bars(250, base_price=100.0, trend=0.002)
+        state = _empty_state()
+        state["positions"]["SPY"] = {
+            "side": "long",
+            "entry_price": 90.0,
+            "stop_level": 88.0,
+            "bars_held": 5,
+        }
+
+        # Force the signal to be add_unit
+        fake_signal = {"signal_state": "add_unit", "confidence": 0.75, "scorecard": {}}
+        fake_features = {
+            "close": 105.0,
+            "long_stop": 88.0,
+            "short_stop": None,
+            "r_unit": 2.0,
+            "atr20": 2.0,
+        }
+
+        with patch("tools.swing_strategy.calculate_indicators", return_value=fake_features), \
+             patch("tools.swing_strategy.evaluate_breakout_signal", return_value=fake_signal):
+            result = evaluate_symbol("SPY", bars, None, None, None, state, ACCOUNT_SIZE_DEFAULT)
+
+        # Must be ADD or HOLD — never ignores the sizing gate
+        assert result["decision"] in ("ADD", "HOLD")
+        if result["decision"] == "ADD":
+            # position_size must be derived from compute_position_size, not None
+            assert result["position_size"] is not None
+            assert result["position_size"] >= MIN_POSITION_SHARES
+
+    def test_add_becomes_hold_when_stop_missing(self):
+        """ADD falls back to HOLD when stop level is absent from features."""
+        from unittest.mock import patch
+
+        bars = _make_bars(250, base_price=100.0, trend=0.002)
+        state = _empty_state()
+        state["positions"]["SPY"] = {
+            "side": "long",
+            "entry_price": 90.0,
+            "stop_level": None,  # no stop stored
+            "bars_held": 5,
+        }
+
+        fake_signal = {"signal_state": "add_unit", "confidence": 0.75, "scorecard": {}}
+        fake_features = {"close": 105.0, "long_stop": None, "short_stop": None, "r_unit": 2.0}
+
+        with patch("tools.swing_strategy.calculate_indicators", return_value=fake_features), \
+             patch("tools.swing_strategy.evaluate_breakout_signal", return_value=fake_signal):
+            result = evaluate_symbol("SPY", bars, None, None, None, state, ACCOUNT_SIZE_DEFAULT)
+
+        assert result["decision"] == "HOLD"
+        assert result["skip_reason"] in ("add_no_price", "add_too_small")
+
 
 # ── load_state / save_state ────────────────────────────────────────────────────
 

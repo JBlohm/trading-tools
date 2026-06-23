@@ -434,12 +434,34 @@ def evaluate_symbol(
             base["decision"] = "REDUCE"
             base["skip_reason"] = None
         elif sig_state == "add_unit":
-            # Check desk constraints for adding
-            allowed, reason = _check_entry_constraints(
-                f"{symbol}_add", state, side
-            )
-            base["decision"] = "ADD"
-            base["skip_reason"] = None
+            # ADD: size additional units against current close and existing stop.
+            # We do NOT run the full entry-constraint gate (no new position is opened;
+            # weekly cooldown and cluster limits don't apply to adding to a winner).
+            # We DO enforce the per-position notional cap so a single name can't
+            # grow unboundedly.
+            add_entry = features.get("close", 0.0)
+            add_stop = pos.get("stop_level")
+            if add_entry and add_stop:
+                add_shares, add_risk = compute_position_size(add_entry, add_stop, account_nlv)
+                if add_shares >= MIN_POSITION_SHARES:
+                    payload, err = _build_proposal(
+                        symbol, side, add_shares, add_entry, add_stop, add_risk, sig_state
+                    )
+                    base.update({
+                        "decision": "ADD",
+                        "entry_price": round(add_entry, 2),
+                        "position_size": add_shares,
+                        "risk_amount": add_risk,
+                        "proposal_payload": payload,
+                        "proposal_error": err,
+                        "skip_reason": None,
+                    })
+                else:
+                    base["decision"] = "HOLD"
+                    base["skip_reason"] = "add_too_small"
+            else:
+                base["decision"] = "HOLD"
+                base["skip_reason"] = "add_no_price"
         else:
             base["decision"] = "HOLD"
             base["skip_reason"] = None
