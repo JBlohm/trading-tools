@@ -485,7 +485,7 @@ def compute_model_metrics(results: dict) -> dict:
 
     long_trades = [t for t in trade_log if t["side"] == "long" and is_full(t)]
     short_trades = [t for t in trade_log if t["side"] == "short" and is_full(t)]
-    all_trades = long_trades + short_trades
+    all_trades = [t for t in trade_log if is_full(t)]
 
     is_cutoff = "2019-12-31"
     return {
