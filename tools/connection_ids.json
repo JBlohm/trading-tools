@@ -65,7 +65,12 @@
       "tool": "detect_crash_liquidity_breakdown.py",
       "description": "PTJ Crash Playbook / Liquidity Breakdown detector: reads daily bars and evaluates crash/liquidity-stress setup state for LLM consumption",
       "read_only": true
+    },
+    "1019": {
+      "tool": "tws_historical_data.py",
+      "description": "Fetches daily OHLCV historical bars from TWS for swing strategy evaluation",
+      "read_only": true
     }
   },
-  "next_available": 1019
+  "next_available": 1020
 }
