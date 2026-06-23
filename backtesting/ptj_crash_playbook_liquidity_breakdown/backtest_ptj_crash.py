@@ -69,6 +69,11 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 SLIPPAGE = 0.0005        # 0.05% each way
 POSITION_SIZE = 0.33     # strategy spec: 0.33 risk unit
 MAX_HOLD_BARS = 20       # fixed time-stop (bars)
+
+_TRADE_LOG_FIELDS = [
+    "entry_date", "entry_price", "exit_date", "exit_price", "exit_reason",
+    "bars_held", "return_pct", "signal_date", "entry_support_shelf", "position_size",
+]
 START_DATE = "2015-01-01"
 END_DATE = "2025-06-01"
 
@@ -334,31 +339,33 @@ def run_backtest(
             and d + 1 < n
         ):
             next_bar = spy_bars[d + 1]
-            entry_price = next_bar.open * (1 - SLIPPAGE)  # sell short at open minus slip
+            # Skip if execution bar opens below the support shelf (crash-gap at execution)
+            if next_bar.open >= (support_shelf or close):
+                entry_price = next_bar.open * (1 - SLIPPAGE)  # sell short at open minus slip
 
-            # Stop: support_shelf from signal bar (slightly above for wiggle room +0.5%)
-            risk_high = (support_shelf or close) * 1.005
+                # Stop: support_shelf from signal bar (slightly above for wiggle room +0.5%)
+                risk_high = (support_shelf or close) * 1.005
 
-            # Record forward returns (5, 10, 20 bars) relative to today's close
-            fwd = {"signal_date": today_date, "close_at_signal": round(close, 4)}
-            for horizon in [5, 10, 20]:
-                future_idx = d + horizon
-                if future_idx < n:
-                    fwd[f"fwd_{horizon}d_return_pct"] = round(
-                        (close - spy_bars[future_idx].close) / close * 100, 4
-                    )
-                else:
-                    fwd[f"fwd_{horizon}d_return_pct"] = None
-            forward_returns.append(fwd)
+                # Record forward returns (5, 10, 20 bars) relative to today's close
+                fwd = {"signal_date": today_date, "close_at_signal": round(close, 4)}
+                for horizon in [5, 10, 20]:
+                    future_idx = d + horizon
+                    if future_idx < n:
+                        fwd[f"fwd_{horizon}d_return_pct"] = round(
+                            (close - spy_bars[future_idx].close) / close * 100, 4
+                        )
+                    else:
+                        fwd[f"fwd_{horizon}d_return_pct"] = None
+                forward_returns.append(fwd)
 
-            open_trade = {
-                "signal_date": today_date,
-                "entry_date": next_bar.date,
-                "entry_price": entry_price,
-                "risk_high": risk_high,
-                "entry_support_shelf": support_shelf or close,
-                "bars_held": 0,
-            }
+                open_trade = {
+                    "signal_date": today_date,
+                    "entry_date": next_bar.date,
+                    "entry_price": entry_price,
+                    "risk_high": risk_high,
+                    "entry_support_shelf": support_shelf or close,
+                    "bars_held": 0,
+                }
 
     # Close any still-open position at the last bar
     if open_trade and spy_bars:
@@ -503,15 +510,14 @@ def write_results(results: dict, metrics: dict) -> None:
             w.writerows(results["signal_log"])
         print(f"  → {sig_path} ({len(results['signal_log'])} rows)")
 
-    # trades.csv
+    # trades.csv — always write to avoid stale artifacts from a previous run
     trade_path = os.path.join(RESULTS_DIR, "trades.csv")
-    if results["trade_log"]:
-        keys = results["trade_log"][0].keys()
-        with open(trade_path, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(keys))
-            w.writeheader()
-            w.writerows(results["trade_log"])
-        print(f"  → {trade_path} ({len(results['trade_log'])} rows)")
+    keys = results["trade_log"][0].keys() if results["trade_log"] else _TRADE_LOG_FIELDS
+    with open(trade_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(keys))
+        w.writeheader()
+        w.writerows(results["trade_log"])
+    print(f"  → {trade_path} ({len(results['trade_log'])} rows)")
 
     # forward_returns.csv
     fwd_path = os.path.join(RESULTS_DIR, "forward_returns.csv")

@@ -206,9 +206,9 @@ class TestEntryLogic:
     def test_entry_not_at_signal_bar(self):
         """Entry must be at the NEXT bar's open, not the signal bar's close."""
         spy, dates = self._build_entry_scenario()
-        # Append entry bar (next bar after signal)
-        spy.append(_bar(282.0, open_=282.0, date=dates[264].strftime("%Y-%m-%d")))
-        spy.append(_bar(280.0, date=dates[265].strftime("%Y-%m-%d")))  # allow exit check
+        # Entry bar opens at 352 (above shelf=350) so the execution guard allows entry
+        spy.append(_bar(349.0, open_=352.0, date=dates[264].strftime("%Y-%m-%d")))
+        spy.append(_bar(349.0, date=dates[265].strftime("%Y-%m-%d")))  # allow exit check
 
         n = len(spy)
         vix, hyg, rsp = self._aux_bars(dates, n)
@@ -233,6 +233,27 @@ class TestEntryLogic:
         for trade in result["trade_log"]:
             assert trade["signal_date"] != gap_date, (
                 "Entry should not fire on a gap-down open signal bar"
+            )
+
+    def test_next_bar_gap_down_prevents_entry(self):
+        """Entry must be skipped when execution bar (d+1) opens below the signal shelf."""
+        spy, dates = self._build_entry_scenario(
+            signal_open=355.0,  # signal day open is above shelf=350 → gap_down_open=False
+            signal_close=280.0,
+            signal_high=405.0,
+            signal_low=279.0,
+        )
+        # Next bar opens at 340, which is below support_shelf≈350 → crash-gap at execution
+        spy.append(_bar(280.0, open_=340.0, date=dates[264].strftime("%Y-%m-%d")))
+        spy.append(_bar(278.0, date=dates[265].strftime("%Y-%m-%d")))  # extra bar
+
+        n = len(spy)
+        vix, hyg, rsp = self._aux_bars(dates, n)
+        result = bt.run_backtest(spy, vix, hyg, rsp)
+        signal_date = dates[263].strftime("%Y-%m-%d")
+        for trade in result["trade_log"]:
+            assert trade["signal_date"] != signal_date, (
+                "Entry should not fire when execution bar opens below the support shelf"
             )
 
 
@@ -261,7 +282,9 @@ class TestExitLogic:
             failed_retest: 400.0 > 350 in last 20 bars + close < 350 → True
             tr_expansion: TR = max(405-279, |405-400|, |279-400|) = max(126, 5, 121) = 126
                           vs ATR20 ≈ 350*0.005 ≈ 1.75 → massive expansion → True
-        - 1 entry bar (open=282): trade enters at 282*(1-SLIPPAGE), risk_high≈351.75.
+        - 1 entry bar (open=352): trade enters at 352*(1-SLIPPAGE), risk_high≈351.75.
+          open=352 > shelf=350 so the execution gap-down guard allows entry;
+          close=349 < risk_high=351.75 so the stop does not fire on the entry bar.
 
         Returns: (bars, dates) where dates is the full pandas DatetimeIndex.
         """
@@ -274,8 +297,9 @@ class TestExitLogic:
         # Signal bar
         bars.append(_bar(280.0, open_=355.0, high=405.0, low=279.0,
                          date=dates[263].strftime("%Y-%m-%d")))
-        # Entry bar (next bar — entry fires here at open=282)
-        bars.append(_bar(282.0, open_=282.0, date=dates[264].strftime("%Y-%m-%d")))
+        # Entry bar: opens above shelf (352 > 350) so execution guard passes;
+        # closes at 349 (< risk_high=351.75) so stop does not fire immediately.
+        bars.append(_bar(349.0, open_=352.0, date=dates[264].strftime("%Y-%m-%d")))
         return bars, dates
 
     def _aux_bars(self, dates, n):
@@ -298,9 +322,9 @@ class TestExitLogic:
     def test_stop_risk_high_triggers_exit(self):
         """When price closes above risk_high (support_shelf * 1.005 ≈ 351.75), exit fires."""
         bars, dates = self._make_entry_scenario()
-        # Append 3 bars below risk_high, then 1 spike above risk_high
+        # Append 3 bars below risk_high (349 < 351.75), then 1 spike above risk_high
         for i in range(3):
-            bars.append(_bar(280.0, date=dates[265 + i].strftime("%Y-%m-%d")))
+            bars.append(_bar(349.0, date=dates[265 + i].strftime("%Y-%m-%d")))
         bars.append(_bar(360.0, open_=352.0, high=362.0, low=351.0,
                          date=dates[268].strftime("%Y-%m-%d")))
 
@@ -315,9 +339,9 @@ class TestExitLogic:
     def test_time_stop_triggers_after_max_hold(self):
         """After MAX_HOLD_BARS, position is closed with exit_reason=time_stop."""
         bars, dates = self._make_entry_scenario()
-        # Add exactly MAX_HOLD_BARS bars at 280 (well below risk_high ≈ 351.75)
+        # Add exactly MAX_HOLD_BARS bars at 349 (below risk_high=351.75 so stop never fires)
         for i in range(bt.MAX_HOLD_BARS):
-            bars.append(_bar(280.0, date=dates[265 + i].strftime("%Y-%m-%d")))
+            bars.append(_bar(349.0, date=dates[265 + i].strftime("%Y-%m-%d")))
 
         n = len(bars)
         vix, hyg, rsp = self._aux_bars(dates, n)
@@ -331,9 +355,9 @@ class TestExitLogic:
     def test_end_of_data_closes_position(self):
         """Open position at end of data is closed with exit_reason=end_of_data."""
         bars, dates = self._make_entry_scenario()
-        # Only 2 post-entry bars — well below MAX_HOLD_BARS and no stop trigger
+        # Only 2 post-entry bars at 349 (below risk_high=351.75) — well below MAX_HOLD_BARS
         for i in range(2):
-            bars.append(_bar(280.0, date=dates[265 + i].strftime("%Y-%m-%d")))
+            bars.append(_bar(349.0, date=dates[265 + i].strftime("%Y-%m-%d")))
 
         n = len(bars)
         vix, hyg, rsp = self._aux_bars(dates, n)
@@ -518,11 +542,12 @@ class TestSlippage:
         # Signal bar
         bars.append(_bar(280.0, open_=355.0, high=405.0, low=279.0,
                          date=dates[263].strftime("%Y-%m-%d")))
-        # Entry bar with a known open
-        next_open = 275.0
-        bars.append(_bar(275.0, open_=next_open, date=dates[264].strftime("%Y-%m-%d")))
+        # Entry bar: open=352 (above shelf=350) so execution guard allows entry;
+        # close=349 (< risk_high=351.75) so stop does not fire on entry bar.
+        next_open = 352.0
+        bars.append(_bar(349.0, open_=next_open, date=dates[264].strftime("%Y-%m-%d")))
         for i in range(5):
-            bars.append(_bar(270.0, date=dates[265 + i].strftime("%Y-%m-%d")))
+            bars.append(_bar(349.0, date=dates[265 + i].strftime("%Y-%m-%d")))
 
         n = len(bars)
         vix = [_bar(50.0, date=dates[i].strftime("%Y-%m-%d")) for i in range(n)]
@@ -534,3 +559,51 @@ class TestSlippage:
         assert len(trades) >= 1, "Expected at least one trade"
         expected_entry = next_open * (1 - bt.SLIPPAGE)
         assert trades[0]["entry_price"] == pytest.approx(expected_entry, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Tests: write_results artifact consistency
+# ---------------------------------------------------------------------------
+
+class TestWriteResults:
+    def _empty_results(self):
+        return {"signal_log": [], "trade_log": [], "forward_returns": []}
+
+    def _metrics(self):
+        return {
+            "total_bars_evaluated": 0,
+            "signal_frequency": {},
+            "forward_return_stats": {},
+            "trade_stats": {},
+            "episode_hits": {
+                k: {
+                    "period": f"{v[0]} – {v[1]}",
+                    "stress_detected": False,
+                    "entry_triggered": False,
+                    "entry_trigger_days": [],
+                    "setup_armed_days": [],
+                }
+                for k, v in bt.EPISODES.items()
+            },
+        }
+
+    def test_trades_csv_written_when_empty(self, tmp_path, monkeypatch):
+        """trades.csv must be written even when trade_log is empty."""
+        monkeypatch.setattr(bt, "RESULTS_DIR", str(tmp_path))
+        bt.write_results(self._empty_results(), self._metrics())
+        trade_path = tmp_path / "trades.csv"
+        assert trade_path.exists(), "trades.csv must be created even with no trades"
+        content = trade_path.read_text()
+        assert len(content.strip()) > 0, "trades.csv must contain at least a header"
+
+    def test_trades_csv_overwrites_stale_file(self, tmp_path, monkeypatch):
+        """trades.csv from a prior run must be replaced, not left stale."""
+        monkeypatch.setattr(bt, "RESULTS_DIR", str(tmp_path))
+        stale_path = tmp_path / "trades.csv"
+        stale_path.write_text("stale,data\nrow1,row2\n")
+        bt.write_results(self._empty_results(), self._metrics())
+        content = stale_path.read_text()
+        assert "stale" not in content, "Stale rows must be replaced on an empty rerun"
+        # Should contain only the header row
+        lines = [l for l in content.splitlines() if l.strip()]
+        assert len(lines) == 1, f"Empty run should produce header-only CSV; got: {lines}"
