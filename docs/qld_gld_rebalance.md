@@ -162,7 +162,7 @@ python tools/qld_gld_rebalance.py --dry-run
       "price_ref": 85.50,
       "target_shares": 87,
       "estimated_notional": 7438.5,
-      "risk_point": 72.68
+      "risk_point": 72.67
     },
     {
       "symbol": "GLD",

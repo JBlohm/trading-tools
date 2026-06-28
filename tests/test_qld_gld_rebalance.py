@@ -120,6 +120,16 @@ class TestComputeDrift:
         drift = compute_drift(state)
         assert drift["QLD"]["exceeds_tolerance"]
 
+    def test_drift_just_above_boundary_not_rounded_away(self):
+        # True QLD weight = 351 / (351 + 649) = 0.351 exactly; drift = 0.051 > 0.05
+        # Previously, rounding weights to 4dp before comparison could suppress this flag.
+        state = compute_current_state(1.0, 351, 1.0, 649)
+        assert state["QLD"]["weight"] == pytest.approx(0.351, abs=0.00001)
+        drift = compute_drift(state)
+        assert drift["QLD"]["exceeds_tolerance"], (
+            "Drift of 5.1pp must trigger tolerance flag even at 4dp rounding boundary"
+        )
+
 
 # ---------------------------------------------------------------------------
 # compute_order_intents
@@ -190,6 +200,29 @@ class TestComputeOrderIntents:
             i["estimated_notional"] for i in intents if i["side"] == "BUY"
         )
         assert total_buy_notional <= ACCOUNT_SIZE_DEFAULT
+
+    def test_quantities_are_integers(self):
+        """Order quantities must be int, never float (e.g. 87 not 87.0)."""
+        state = compute_current_state(85.0, 0, 195.0, 0)
+        intents = compute_order_intents(state, 25_000.0, 85.0, 195.0)
+        for intent in intents:
+            assert isinstance(intent["quantity"], int), (
+                f"{intent['symbol']} quantity should be int, got {type(intent['quantity'])}"
+            )
+
+    def test_sell_quantity_is_integer_and_not_over_sell(self):
+        """SELL side must not over-sell by rounding float shares to wrong int."""
+        # current_shares passed as float to simulate stored state
+        qld_price = 100.0
+        gld_price = 100.0
+        account = 25_000.0
+        # Pass shares as float; target GLD = floor(17500/100) = 175; current = 176.0
+        state = compute_current_state(qld_price, float(75), gld_price, float(176))
+        intents = compute_order_intents(state, account, qld_price, gld_price)
+        gld_intent = next(i for i in intents if i["symbol"] == "GLD")
+        assert gld_intent["side"] == "SELL"
+        assert gld_intent["quantity"] == 1
+        assert isinstance(gld_intent["quantity"], int)
 
 
 # ---------------------------------------------------------------------------

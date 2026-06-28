@@ -111,15 +111,26 @@ def compute_current_state(
 
 
 def compute_drift(current_state: dict) -> dict:
-    """Return per-symbol drift vs target weights."""
+    """Return per-symbol drift vs target weights.
+
+    Computes drift from raw market values (not rounded weights) so that drifts
+    just above the tolerance boundary are not rounded away before the comparison.
+    """
+    total = current_state["total_portfolio_value"]
+    if total <= 0:
+        raw_qld_weight = 0.0
+        raw_gld_weight = 0.0
+    else:
+        raw_qld_weight = current_state["QLD"]["market_value"] / total
+        raw_gld_weight = current_state["GLD"]["market_value"] / total
     return {
         "QLD": {
-            "drift": round(current_state["QLD"]["weight"] - TARGET_QLD_WEIGHT, 4),
-            "exceeds_tolerance": abs(current_state["QLD"]["weight"] - TARGET_QLD_WEIGHT) > DRIFT_TOLERANCE,
+            "drift": round(raw_qld_weight - TARGET_QLD_WEIGHT, 4),
+            "exceeds_tolerance": abs(raw_qld_weight - TARGET_QLD_WEIGHT) > DRIFT_TOLERANCE,
         },
         "GLD": {
-            "drift": round(current_state["GLD"]["weight"] - TARGET_GLD_WEIGHT, 4),
-            "exceeds_tolerance": abs(current_state["GLD"]["weight"] - TARGET_GLD_WEIGHT) > DRIFT_TOLERANCE,
+            "drift": round(raw_gld_weight - TARGET_GLD_WEIGHT, 4),
+            "exceeds_tolerance": abs(raw_gld_weight - TARGET_GLD_WEIGHT) > DRIFT_TOLERANCE,
         },
     }
 
@@ -145,7 +156,9 @@ def compute_order_intents(
         target_notional = target[symbol]["target_notional"]
         target_shares_raw = target_notional / price
         target_shares = math.floor(target_shares_raw)
-        current_shares = current_state[symbol]["shares"]
+        # round() before int() guards against floating-point representation of whole numbers
+        # e.g. 87.9999999 → 88, not 87
+        current_shares = int(round(current_state[symbol]["shares"]))
 
         delta = target_shares - current_shares
         if delta == 0:
@@ -153,10 +166,10 @@ def compute_order_intents(
             quantity = 0
         elif delta > 0:
             side = "BUY"
-            quantity = delta
+            quantity = int(delta)
         else:
             side = "SELL"
-            quantity = abs(delta)
+            quantity = int(abs(delta))
 
         risk_stop_pct = QLD_RISK_STOP_PCT if symbol == "QLD" else GLD_RISK_STOP_PCT
         risk_point = round(price * (1 - risk_stop_pct), 2)
