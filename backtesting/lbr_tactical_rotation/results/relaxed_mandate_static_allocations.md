@@ -8,13 +8,13 @@
 
 | Metric | Value |
 |--------|-------|
-| CAGR | 17.50% |
+| CAGR | 14.47% |
 | Starting equity | $25,000 |
-| Ending equity | $133,572 |
-| Max drawdown | -29.38% |
-| Worst calendar year | -21.42% |
-| Best calendar year | ~+75% (approx, see annual breakdown) |
-| SPY CAGR (same period) | 12.58% |
+| Ending equity | $189,526 |
+| Max drawdown | -30.11% |
+| Worst calendar year | -22.09% |
+| Best calendar year | +47.48% |
+| SPY CAGR (same period) | 13.69% |
 | Rebalance frequency | Monthly (first trading day) |
 | Symbols | QLD (2x Nasdaq-100), GLD (Gold) |
 
