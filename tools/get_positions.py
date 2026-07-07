@@ -60,7 +60,7 @@ def position_to_dict(item: Any) -> dict:
         "realized_pnl": item.realizedPNL,
         "account": item.account,
     }
-    if contract.secType == "OPT":
+    if contract.secType in {"OPT", "FOP"}:
         position.update(
             {
                 "expiry": contract.lastTradeDateOrContractMonth,
