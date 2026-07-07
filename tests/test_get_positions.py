@@ -79,6 +79,23 @@ class TestPositionToDict:
         assert result["unrealized_pnl"] == 2550.0
         assert result["realized_pnl"] == 0.0
         assert result["account"] == "DU123456"
+        assert "expiry" not in result
+        assert "strike" not in result
+        assert "right" not in result
+
+    def test_option_contract_fields_present(self):
+        contract = _make_contract(
+            secType="OPT",
+            lastTradeDateOrContractMonth="20251220",
+            strike=500.0,
+            right="P",
+        )
+        item = _make_portfolio_item(contract=contract)
+        result = self.fn(item)
+        assert result["sec_type"] == "OPT"
+        assert result["expiry"] == "20251220"
+        assert result["strike"] == 500.0
+        assert result["right"] == "P"
 
     def test_uses_primary_exchange_when_available(self):
         item = _make_portfolio_item()
