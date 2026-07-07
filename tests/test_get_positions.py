@@ -97,6 +97,20 @@ class TestPositionToDict:
         assert result["strike"] == 500.0
         assert result["right"] == "P"
 
+    def test_futures_option_contract_fields_present(self):
+        contract = _make_contract(
+            secType="FOP",
+            lastTradeDateOrContractMonth="20260320",
+            strike=4500.0,
+            right="C",
+        )
+        item = _make_portfolio_item(contract=contract)
+        result = self.fn(item)
+        assert result["sec_type"] == "FOP"
+        assert result["expiry"] == "20260320"
+        assert result["strike"] == 4500.0
+        assert result["right"] == "C"
+
     def test_uses_primary_exchange_when_available(self):
         item = _make_portfolio_item()
         item.contract = _make_contract(primaryExchange="NASDAQ", exchange="SMART")
