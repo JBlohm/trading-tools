@@ -1,7 +1,8 @@
 # Swing Strategy Framework — Operator Manual
 
-> Daily loop for the PTJ Macro Breakout With Asymmetric Risk strategy across a
-> 6-symbol universe, running on a $25,000 paper/live account via TWS API.
+> Daily loop for the PTJ Macro Breakout With Asymmetric Risk strategy. The default
+> paper-candidate variant is SPY-only and long-only, running on a $25,000 paper/live
+> account via TWS API.
 
 ---
 
@@ -26,7 +27,15 @@ SKIP on out-of-regime signals and uses the multi-symbol backtest results to gate
 
 ---
 
-## Symbol Universe
+## Strategy Variants and Symbol Universe
+
+Default production/paper-candidate variant: `spy_long_only`. It evaluates SPY only and
+permits new long entries only. Short signals are explicit `SKIP` decisions
+(`direction_short_disabled`) and never build a proposal or order. Existing open positions are
+still managed through the normal HOLD/ADD/REDUCE/EXIT path so risk can be reduced safely.
+
+Legacy research variant: `legacy_multi_symbol`. It preserves the original long/short
+6-symbol universe for research and comparison runs:
 
 | Symbol | Asset | Macro role |
 |--------|-------|-----------|
@@ -44,7 +53,8 @@ SKIP on out-of-regime signals and uses the multi-symbol backtest results to gate
 ## Strategy Rules
 
 ### Entry
-- Signal state must be `entry_trigger_long` or `entry_trigger_short`.
+- Default `spy_long_only`: signal state must be `entry_trigger_long`; `entry_trigger_short` is skipped.
+- Legacy `legacy_multi_symbol`: signal state must be `entry_trigger_long` or `entry_trigger_short`.
 - Two-step confirmation required: close outside range + retest hold.
 - At least 3 macro confirmations (rates, dollar, credit, trend, structure).
 - Volume expansion on breakout or retest bar (1.2× 20-day average).
@@ -123,7 +133,9 @@ SKIP on out-of-regime signals and uses the multi-symbol backtest results to gate
 | `position_too_small_shares_0` | Stop too tight / price too high for sizing |
 | `proposal_invalid` | TradeProposal schema validation failed |
 | `tws_offline` | TWS not reachable; no trades allowed |
-| `insufficient_bars` | Not enough history for indicators |
+| `insufficient_bars` | Fewer than 50 bars returned |
+| `insufficient_indicator_history_N_bars_need_225` | Data fetch succeeded but returned too few trading bars for the 200dma + range/retest warmup |
+| `direction_short_disabled` | The active variant is long-only and skipped a short entry signal before proposal/order construction |
 | `low_liquidity_adv_N` | Average daily volume below 500,000 |
 
 ---
@@ -149,8 +161,11 @@ The framework never guesses TWS is available. Offline detection path:
 Run once per trading day, **after the 4pm ET close** or **before the 9:30am ET open**.
 
 ```bash
-# 1. Dry-run first (no TWS required, uses yfinance)
+# 1. Dry-run first (no TWS required, uses yfinance/HTTP fallback). Default is spy_long_only.
 python tools/swing_strategy.py --dry-run
+
+# Optional: legacy research universe, not the default paper candidate.
+python tools/swing_strategy.py --dry-run --strategy-variant legacy_multi_symbol
 
 # 2. Paper run (requires TWS paper account on port 7497)
 python tools/swing_strategy.py --paper
@@ -236,8 +251,9 @@ python tools/tws_historical_data.py --symbol SPY --days 300
 # Check output — must be {"status": "ok", ...}
 ```
 
-If TWS returns fewer bars than requested (thin recent history), the strategy silently proceeds
-with whatever is available, subject to the 220-bar warmup requirement for the indicators.
+If TWS or dry-run history returns fewer bars than requested, the strategy proceeds only when
+at least 225 trading bars are available for the indicator warmup. Otherwise it emits a clear
+`insufficient_indicator_history_N_bars_need_225` SKIP instead of a generic indicator error.
 
 ---
 
@@ -261,7 +277,7 @@ Sharpe negative. The multi-symbol framework may improve this by:
 
 | File | Purpose |
 |------|---------|
-| `tools/swing_strategy.py` | Daily loop CLI: evaluate all symbols, emit decisions |
+| `tools/swing_strategy.py` | Daily loop CLI: evaluate active variant symbols, emit decisions |
 | `tools/tws_historical_data.py` | Historical bars from TWS paper/live |
 | `tools/swing_state.json` | Persistent state: open positions, last trade dates |
 | `tools/detect_macro_breakout.py` | Signal detection (unchanged) |
