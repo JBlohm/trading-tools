@@ -47,7 +47,7 @@ python tools/get_positions.py --host 127.0.0.1 --port 4002
 
 ## Output
 
-Prints a JSON array to **stdout**. Each element represents one open position:
+Prints a JSON array to **stdout**. Each element represents one open position. Option positions also include `expiry`, `strike`, and `right`:
 
 ```json
 [

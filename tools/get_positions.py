@@ -46,7 +46,7 @@ def utc_timestamp() -> str:
 
 def position_to_dict(item: Any) -> dict:
     contract = item.contract
-    return {
+    position = {
         "symbol": contract.symbol,
         "sec_type": contract.secType,
         "currency": contract.currency,
@@ -60,6 +60,15 @@ def position_to_dict(item: Any) -> dict:
         "realized_pnl": item.realizedPNL,
         "account": item.account,
     }
+    if contract.secType == "OPT":
+        position.update(
+            {
+                "expiry": contract.lastTradeDateOrContractMonth,
+                "strike": contract.strike,
+                "right": contract.right,
+            }
+        )
+    return position
 
 
 async def fetch_positions(host: str, port: int, client_id: int) -> list[dict]:
