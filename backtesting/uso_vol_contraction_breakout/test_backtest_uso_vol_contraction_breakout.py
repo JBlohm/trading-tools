@@ -1,0 +1,125 @@
+"""
+Tests for backtest_uso_vol_contraction_breakout.py.
+
+Covers:
+  1. Public event-date helper coverage.
+  2. Indicator generation for USO / SPY / VIX / CL frames.
+  3. Signal generation and one-trade backtest flow.
+  4. Artifact writing to CSV / Markdown outputs.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+BT_DIR = os.path.dirname(__file__)
+ROOT = os.path.dirname(os.path.dirname(BT_DIR))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, BT_DIR)
+
+import backtest_uso_vol_contraction_breakout as bt
+
+
+def make_frame(start: str, closes: list[float], volume: float = 6_000_000, spread: float = 0.01) -> pd.DataFrame:
+    dates = pd.date_range(start, periods=len(closes), freq="B")
+    rows = []
+    for d, c in zip(dates, closes):
+        rows.append(
+            {
+                "date": d,
+                "open": c,
+                "high": c * (1 + spread),
+                "low": c * (1 - spread),
+                "close": c,
+                "volume": volume,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_market() -> pd.DataFrame:
+    base = list(np.linspace(100.0, 125.0, 260))
+    uso_closes = base + [116.0, 126.0, 126.5, 132.0, 131.0]
+    spy_closes = list(np.linspace(300.0, 330.0, len(uso_closes)))
+    vix_closes = [20.0] * len(uso_closes)
+    cl_closes = [70.0] * len(uso_closes)
+    uup_closes = [25.0] * len(uso_closes)
+
+    # Create a true pullback day before the breakout.
+    uso = make_frame("2020-01-02", uso_closes)
+    final_dates = pd.to_datetime(["2021-02-04", "2021-02-08", "2021-02-09", "2021-02-11", "2021-02-12"])
+    for idx, d in zip(range(len(base), len(base) + 5), final_dates):
+        uso.at[idx, "date"] = d
+    uso.loc[len(base), ["open", "high", "low", "close"]] = [121.0, 122.0, 115.0, 116.0]
+    uso.loc[len(base) + 1, ["open", "high", "low", "close"]] = [118.0, 127.0, 117.0, 126.0]
+    uso.loc[len(base) + 2, ["open", "high", "low", "close"]] = [124.5, 132.0, 124.0, 126.5]
+    uso.loc[len(base) + 3, ["open", "high", "low", "close"]] = [126.5, 132.0, 126.0, 132.0]
+    uso.loc[len(base) + 4, ["open", "high", "low", "close"]] = [132.0, 133.0, 130.0, 131.0]
+
+    spy = make_frame("2020-01-02", spy_closes, volume=80_000_000)
+    vix = make_frame("2020-01-02", vix_closes, volume=20_000_000)
+    cl = make_frame("2020-01-02", cl_closes, volume=15_000_000)
+    uup = make_frame("2020-01-02", uup_closes, volume=4_000_000)
+    for idx, d in zip(range(len(base), len(base) + 5), final_dates):
+        spy.at[idx, "date"] = d
+        vix.at[idx, "date"] = d
+        cl.at[idx, "date"] = d
+        uup.at[idx, "date"] = d
+    return bt.merge_market_data(uso, spy, vix, cl, uup=uup)
+
+
+def test_build_event_date_set_contains_known_public_dates():
+    events = bt.build_event_date_set(2020, 2020)
+    assert "2020-03-03" in events  # FOMC
+    assert "2020-03-11" in events  # CPI approximation
+    assert "2020-01-03" in events  # first Friday of Jan 2020
+    assert all(isinstance(d, str) for d in events)
+
+
+def test_add_price_indicators_populates_core_fields():
+    frame = make_frame("2020-01-02", list(np.linspace(100, 130, 260)))
+    out = bt.add_price_indicators(frame, "uso")
+    last = out.iloc[-1]
+    assert pd.notna(last["uso_ema20"])
+    assert pd.notna(last["uso_ema200"])
+    assert pd.notna(last["uso_atr14"])
+    assert pd.notna(last["uso_atr_pctile"])
+    assert pd.notna(last["uso_rsi3"])
+    assert last["uso_avg_volume_20d"] > 0
+
+
+def test_run_backtest_creates_one_trade_and_artifacts(tmp_path, monkeypatch):
+    market = build_market()
+    monkeypatch.setattr(bt, "_pullback_setup_ok", lambda row: bool(row["uso_close"] <= row["uso_ema20"] * 1.01 and row["uso_rsi3"] < 30))
+    result = bt.run_backtest(market)
+    trades = result["trades"]
+    assert len(trades) == 1
+    trade = trades.iloc[0]
+    assert trade["direction"] == "long"
+    assert trade["entry_date"] > trade["signal_date"]
+    assert trade["exit_reason"] in {"profit_target", "time_stop", "stop_loss", "gap_through_stop", "atr_shock_exit"}
+    assert trade["shares"] > 0
+
+    monkeypatch.setattr(bt, "RESULTS_DIR", str(tmp_path))
+    bt.write_artifacts(result, market)
+
+    expected = [
+        "trade_ledger.csv",
+        "decision_log.csv",
+        "equity_curve.csv",
+        "drawdown_series.csv",
+        "benchmark_comparison.csv",
+        "performance_summary.md",
+    ]
+    for name in expected:
+        assert (Path(tmp_path) / name).exists(), name
+
+    summary = (Path(tmp_path) / "performance_summary.md").read_text(encoding="utf-8")
+    assert "USO Volatility-Contraction Breakout Backtest Summary" in summary
+    assert "Benchmark comparison" in summary
