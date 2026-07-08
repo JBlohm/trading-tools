@@ -94,6 +94,31 @@ def test_lag_buckets_and_sell_exit_only_variant_are_timestamped_at_filing_date()
     assert signals[1].entry_date == pd.Timestamp("2026-02-17")
 
 
+def test_sells_exit_only_closes_existing_long_before_time_exit():
+    prices = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09", "2026-01-12"]),
+            "ticker": ["AAPL"] * 7,
+            "open": [100.0, 101.0, 104.0, 105.0, 98.0, 97.0, 96.0],
+            "close": [100.0, 103.0, 105.0, 99.0, 97.0, 96.0, 95.0],
+            "sector": ["Technology"] * 7,
+        }
+    )
+    transactions = [
+        bt.PoliticianTransaction("Fast", "House", pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-02"), "Self", "AAPL", "Apple", "Stock", "Purchase", "$1,001 - $15,000", "1", "url"),
+        bt.PoliticianTransaction("Fast", "House", pd.Timestamp("2026-01-07"), pd.Timestamp("2026-01-03"), "Self", "AAPL", "Apple", "Stock", "Sale", "$1,001 - $15,000", "2", "url"),
+    ]
+    signals = bt.build_strategy_signals(transactions, pd.DatetimeIndex(prices["date"]), variant="sells_exit_only")
+
+    result = bt.run_backtest(signals, prices, holding_days=5, starting_equity=10_000.0, transaction_cost_bps=0.0, slippage_bps=0.0)
+
+    assert result["metrics"].loc["strategy", "trade_count"] == 1
+    trade = result["trades"].iloc[0]
+    assert trade["entry_date"] == pd.Timestamp("2026-01-06")
+    assert trade["exit_date"] == pd.Timestamp("2026-01-08")
+    assert trade["exit_reason"] == "sell_exit_only"
+
+
 def test_run_backtest_writes_metrics_and_placebo_artifacts(tmp_path: Path):
     prices = pd.DataFrame(
         {

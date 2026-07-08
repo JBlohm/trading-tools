@@ -326,6 +326,13 @@ def run_backtest(
     trades: list[dict[str, object]] = []
     equity = starting_equity
     per_side_cost = (transaction_cost_bps + slippage_bps) / 10_000.0
+    exit_only_by_ticker: dict[str, list[StrategySignal]] = {}
+    for signal in signals:
+        if signal.exit_only:
+            exit_only_by_ticker.setdefault(signal.ticker, []).append(signal)
+    for ticker_signals in exit_only_by_ticker.values():
+        ticker_signals.sort(key=lambda s: (s.entry_date, s.source_doc_id))
+
     for signal in signals:
         if signal.direction == 0:
             continue
@@ -336,11 +343,18 @@ def run_backtest(
         if len(exit_candidates) == 0:
             continue
         exit_date = pd.Timestamp(exit_candidates[min(holding_days - 1, len(exit_candidates) - 1)])
+        exit_reason = "time_exit"
+        for exit_signal in exit_only_by_ticker.get(signal.ticker, []):
+            if signal.entry_date < exit_signal.entry_date <= exit_date:
+                exit_date = exit_signal.entry_date
+                exit_reason = "sell_exit_only"
+                break
         exit_row = price_map.get((signal.ticker, exit_date))
         if exit_row is None:
             continue
         entry = float(entry_row.open) * (1 + per_side_cost * signal.direction)
-        exit_px = float(exit_row.close) * (1 - per_side_cost * signal.direction)
+        raw_exit = float(exit_row.open if exit_reason == "sell_exit_only" else exit_row.close)
+        exit_px = raw_exit * (1 - per_side_cost * signal.direction)
         gross_ret = signal.direction * (exit_px / entry - 1.0)
         capital = equity * single_name_cap
         pnl = capital * gross_ret
@@ -349,6 +363,7 @@ def run_backtest(
             {
                 **asdict(signal),
                 "exit_date": exit_date,
+                "exit_reason": exit_reason,
                 "entry_price": entry,
                 "exit_price": exit_px,
                 "gross_return": gross_ret,
