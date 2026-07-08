@@ -677,6 +677,21 @@ def _split_metrics(trades: pd.DataFrame, split_date: str) -> tuple[dict[str, Any
     return compute_metrics(in_sample, stub_equity, stub_dd), compute_metrics(out_sample, stub_equity, stub_dd)
 
 
+
+
+def determine_recommendation(metrics: dict[str, Any]) -> tuple[str, str]:
+    if metrics.get("trade_count", 0) < 30:
+        return "RESEARCH-ONLY/REJECTED", "fewer than 30 trades"
+    if metrics.get("profit_factor", 0.0) < 1.25:
+        return "RESEARCH-ONLY/REJECTED", "profit factor below 1.25"
+    if metrics.get("expectancy", 0.0) <= 0:
+        return "RESEARCH-ONLY/REJECTED", "non-positive expectancy"
+    if metrics.get("max_drawdown", 0.0) < -0.12:
+        return "RESEARCH-ONLY/REJECTED", "max drawdown worse than 12%"
+    if metrics.get("profit_factor", 0.0) >= 1.5 and metrics.get("max_drawdown", 0.0) >= -0.12:
+        return "PAPER-CANDIDATE", "meets coarse backtest thresholds"
+    return "RESEARCH-ONLY/REJECTED", "did not clear paper-candidate thresholds"
+
 def _fmt_metrics(metrics: dict[str, Any]) -> list[str]:
     lines = []
     for key, value in metrics.items():
@@ -707,6 +722,7 @@ def write_artifacts(result: dict[str, Any], market: pd.DataFrame) -> None:
     split_date = market["date"].iloc[int(len(market) * 0.7)].strftime("%Y-%m-%d")
     in_sample_metrics, out_sample_metrics = _split_metrics(trades, split_date)
 
+    verdict, verdict_reason = determine_recommendation(metrics)
     summary = [
         "# USO Volatility-Contraction Breakout Backtest Summary",
         "",
@@ -716,15 +732,16 @@ def write_artifacts(result: dict[str, Any], market: pd.DataFrame) -> None:
         "- No live or paper execution code",
         f"- Date range: {market['date'].iloc[0].strftime('%Y-%m-%d')} to {market['date'].iloc[-1].strftime('%Y-%m-%d')}",
         f"- Split date (70/30): {split_date}",
+        f"- Final recommendation: {verdict} ({verdict_reason})",
         "",
         "## Core metrics",
-        * _fmt_metrics(metrics),
+        *_fmt_metrics(metrics),
         "",
         "## In-sample metrics",
-        * _fmt_metrics(in_sample_metrics),
+        *_fmt_metrics(in_sample_metrics),
         "",
         "## Out-of-sample metrics",
-        * _fmt_metrics(out_sample_metrics),
+        *_fmt_metrics(out_sample_metrics),
         "",
         "## Benchmark comparison",
     ]
@@ -756,7 +773,8 @@ def main() -> int:
     result = run_backtest(market)
     write_artifacts(result, market)
     metrics = result["metrics"]
-    print(json.dumps({"trades": int(metrics["trade_count"]), "ending_equity": metrics["ending_equity"], "max_drawdown": metrics["max_drawdown"], "profit_factor": metrics.get("profit_factor", 0), "out_dir": RESULTS_DIR}, indent=2))
+    verdict, verdict_reason = determine_recommendation(metrics)
+    print(json.dumps({"trades": int(metrics["trade_count"]), "ending_equity": metrics["ending_equity"], "max_drawdown": metrics["max_drawdown"], "profit_factor": metrics.get("profit_factor", 0), "verdict": verdict, "verdict_reason": verdict_reason, "out_dir": RESULTS_DIR}, indent=2))
     return 0
 
 

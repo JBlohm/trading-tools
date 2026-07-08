@@ -6,6 +6,7 @@
 - No live or paper execution code
 - Date range: 2015-01-02 to 2025-05-30
 - Split date (70/30): 2022-04-13
+- Final recommendation: RESEARCH-ONLY/REJECTED (fewer than 30 trades)
 
 ## Core metrics
 - trade_count: 3
