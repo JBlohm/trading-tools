@@ -750,8 +750,7 @@ def write_artifacts(result: dict[str, Any], market: pd.DataFrame) -> None:
         "",
         "## Notes",
         "- The strategy requires a constructive long regime in USO and SPY.",
-        "- EIA Wednesdays and public macro event dates are blocked for fresh entries.",
-        "- ATR percentile uses a trailing 120-day lookback in this v1.",
+        "- EIA Wednesdays and public macro event dates are blocked for fresh entries. ATR percentile uses a 120-day trailing lookback in this v1.",
         "- If a required public input is missing, the engine stays flat and records the skip.",
         "- This v1 deliberately avoids any live, paper, or broker-execution path.",
     ])
