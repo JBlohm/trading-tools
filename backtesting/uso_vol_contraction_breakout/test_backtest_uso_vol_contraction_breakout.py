@@ -172,11 +172,21 @@ def test_split_metrics_use_realized_trade_equity():
         ]
     )
 
-    in_sample, out_sample = bt._split_metrics(trades, "2021-01-01")
+    in_sample, out_sample = bt._split_metrics(trades, "2021-01-01", "2020-01-01", "2021-12-31")
 
     assert in_sample["ending_equity"] == bt.STARTING_EQUITY - 150.0
     assert in_sample["max_drawdown"] < 0.0
+    assert -0.01 < in_sample["cagr"] < 0.0
     assert out_sample["ending_equity"] == bt.STARTING_EQUITY + 50.0
+
+
+def test_split_metrics_supports_a_no_trade_period():
+    in_sample, out_sample = bt._split_metrics(pd.DataFrame(), "2021-01-01", "2020-01-01", "2021-12-31")
+
+    assert in_sample["trade_count"] == 0
+    assert out_sample["trade_count"] == 0
+    assert in_sample["ending_equity"] == bt.STARTING_EQUITY
+    assert out_sample["ending_equity"] == bt.STARTING_EQUITY
 
 
 def test_trend_benchmark_realizes_exit_day_close():
@@ -192,3 +202,22 @@ def test_trend_benchmark_realizes_exit_day_close():
     benchmark = bt.compute_benchmarks(market).set_index("strategy")
 
     assert benchmark.loc["trend_filter", "ending_equity"] == bt.STARTING_EQUITY * 90.0 / 110.0
+
+
+def test_entry_uses_only_open_time_and_signal_day_inputs():
+    market = build_market()
+    signal_idx = len(market) - 4
+    entry_idx = signal_idx + 1
+    baseline, baseline_reason, _ = bt._build_entry_trade(market, signal_idx, entry_idx, 1)
+    assert baseline is not None
+    assert baseline_reason is None
+
+    market.loc[market.index[entry_idx], ["uso_volume", "uso_atr14", "uso_atr_pct", "uso_atr_pctile", "vix_close"]] = [0.0, 999.0, 9.0, 1.0, 99.0]
+    market.loc[market.index[entry_idx], "risk_off_spy"] = True
+    trade, skip_reason, _ = bt._build_entry_trade(market, signal_idx, entry_idx, 1)
+
+    assert trade is not None
+    assert skip_reason is None
+    assert trade["shares"] == baseline["shares"]
+    assert trade["stop_level"] == baseline["stop_level"]
+    assert trade["target_level"] == baseline["target_level"]

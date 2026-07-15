@@ -372,26 +372,21 @@ def _build_entry_trade(market: pd.DataFrame, signal_idx: int, entry_idx: int, tr
     prev_close = signal_row["uso_close"]
     entry_gap_pct = abs(entry_row["uso_open"] / prev_close - 1.0)
     skip_flags = [f"signal_{reason}" for reason in _skip_reasons(signal_row)]
-    skip_flags.extend(f"entry_{reason}" for reason in _skip_reasons(entry_row))
+    if entry_row["is_wednesday"]:
+        skip_flags.append("entry_eia_inventory_day")
+    if entry_row["is_public_event"]:
+        skip_flags.append("entry_public_event_window")
     if entry_gap_pct > MAX_GAP_PCT:
         skip_flags.append("entry_gap_too_large")
-    if entry_row["uso_volume"] <= 0:
-        skip_flags.append("entry_zero_volume")
-    if entry_row["uso_atr_pct"] > MAX_ATR_PCT:
-        skip_flags.append("entry_atr_too_high")
-    if entry_row["vix_close"] > VIX_HARD_STOP:
-        skip_flags.append("entry_vix_hard_stop")
     if entry_row["cl_gap_pct"] > 0.08:
         skip_flags.append("entry_wti_discontinuity")
-    if entry_row["risk_off_spy"]:
-        skip_flags.append("entry_spy_risk_off")
 
     if skip_flags:
         return None, ",".join(skip_flags), None
 
-    risk_pct, notional_pct = _risk_inputs(entry_row)
+    risk_pct, notional_pct = _risk_inputs(signal_row)
     stop_candidate_swing = float(signal_row["uso_prior_swing_low"])
-    stop_candidate_atr = float(entry_row["uso_open"] - 2.0 * entry_row["uso_atr14"])
+    stop_candidate_atr = float(entry_row["uso_open"] - 2.0 * signal_row["uso_atr14"])
     stop_level = min(stop_candidate_swing, stop_candidate_atr)
     risk_per_share = float(entry_row["uso_open"] - stop_level)
     if not math.isfinite(risk_per_share) or risk_per_share <= 0:
@@ -423,14 +418,14 @@ def _build_entry_trade(market: pd.DataFrame, signal_idx: int, entry_idx: int, tr
         "stop_level": stop_level,
         "target_level": target_level,
         "entry_gap_pct": entry_gap_pct,
-        "atr_pct": float(entry_row["uso_atr_pct"]),
-        "atr_pctile": float(entry_row["uso_atr_pctile"]),
+        "atr_pct": float(signal_row["uso_atr_pct"]),
+        "atr_pctile": float(signal_row["uso_atr_pctile"]),
         "rsi3": float(signal_row["uso_rsi3"]),
         "ema20": float(signal_row["uso_ema20"]),
         "ema50": float(signal_row["uso_ema50"]),
         "ema200": float(signal_row["uso_ema200"]),
-        "vix": float(entry_row["vix_close"]),
-        "spy_regime": "constructive" if not entry_row["risk_off_spy"] else "risk_off",
+        "vix": float(signal_row["vix_close"]),
+        "spy_regime": "constructive" if not signal_row["risk_off_spy"] else "risk_off",
         "skip_flags": skip_flags,
     }
     trade = {
@@ -453,14 +448,14 @@ def _build_entry_trade(market: pd.DataFrame, signal_idx: int, entry_idx: int, tr
         "commission": 0.0,
         "slippage": SLIPPAGE_PER_SHARE,
         "gap_pct": float(entry_gap_pct),
-        "atr": float(entry_row["uso_atr14"]),
-        "atr_pctile": float(entry_row["uso_atr_pctile"]),
+        "atr": float(signal_row["uso_atr14"]),
+        "atr_pctile": float(signal_row["uso_atr_pctile"]),
         "rsi3": float(signal_row["uso_rsi3"]),
         "ema20": float(signal_row["uso_ema20"]),
         "ema50": float(signal_row["uso_ema50"]),
         "ema200": float(signal_row["uso_ema200"]),
-        "vix": float(entry_row["vix_close"]),
-        "spy_regime": "constructive" if not entry_row["risk_off_spy"] else "risk_off",
+        "vix": float(signal_row["vix_close"]),
+        "spy_regime": "constructive" if not signal_row["risk_off_spy"] else "risk_off",
         "volume": float(signal_row["uso_volume"]),
         "avg_volume_20d": float(signal_row["uso_avg_volume_20d"]),
         "skip_flags": ",".join(skip_flags),
@@ -671,31 +666,39 @@ def compute_benchmarks(market: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _equity_from_realized_trades(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    if trades.empty:
-        equity = pd.DataFrame({"equity": [STARTING_EQUITY], "date": [pd.Timestamp("1970-01-01")]})
-        return equity, pd.DataFrame({"drawdown": [0.0]})
+def _equity_from_realized_trades(trades: pd.DataFrame, period_start: pd.Timestamp, period_end: pd.Timestamp) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if period_end < period_start:
+        raise ValueError("period_end must not precede period_start")
 
-    ordered = trades.sort_values(["exit_date", "entry_date"]).reset_index(drop=True)
     equity = STARTING_EQUITY
-    rows = [{"date": pd.to_datetime(ordered.iloc[0]["entry_date"]), "equity": equity}]
-    for _, trade in ordered.iterrows():
-        equity += float(trade["pnl"])
-        rows.append({"date": pd.to_datetime(trade["exit_date"]), "equity": equity})
+    rows = [{"date": period_start, "equity": equity}]
+    if not trades.empty:
+        ordered = trades.sort_values(["exit_date", "entry_date"]).reset_index(drop=True)
+        for _, trade in ordered.iterrows():
+            exit_date = pd.to_datetime(trade["exit_date"])
+            if period_start <= exit_date <= period_end:
+                equity += float(trade["pnl"])
+                rows.append({"date": exit_date, "equity": equity})
+    if period_end != rows[-1]["date"]:
+        rows.append({"date": period_end, "equity": equity})
     equity_curve = pd.DataFrame(rows)
     drawdown = equity_curve["equity"] / equity_curve["equity"].cummax() - 1.0
     return equity_curve, pd.DataFrame({"date": equity_curve["date"], "drawdown": drawdown})
 
 
-def _split_metrics(trades: pd.DataFrame, split_date: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    if trades.empty:
-        empty = {"trade_count": 0, "expectancy": 0.0, "profit_factor": 0.0, "win_rate": 0.0, "max_drawdown": 0.0, "ending_equity": STARTING_EQUITY, "cagr": 0.0}
-        return empty, empty
+def _split_metrics(trades: pd.DataFrame, split_date: str, period_start: str, period_end: str) -> tuple[dict[str, Any], dict[str, Any]]:
     split = pd.to_datetime(split_date)
+    start = pd.to_datetime(period_start)
+    end = pd.to_datetime(period_end)
+    if trades.empty:
+        empty = pd.DataFrame()
+        in_equity, in_drawdown = _equity_from_realized_trades(empty, start, split)
+        out_equity, out_drawdown = _equity_from_realized_trades(empty, split, end)
+        return compute_metrics(empty, in_equity, in_drawdown), compute_metrics(empty, out_equity, out_drawdown)
     in_sample = trades[pd.to_datetime(trades["entry_date"]) < split]
     out_sample = trades[pd.to_datetime(trades["entry_date"]) >= split]
-    in_equity, in_drawdown = _equity_from_realized_trades(in_sample)
-    out_equity, out_drawdown = _equity_from_realized_trades(out_sample)
+    in_equity, in_drawdown = _equity_from_realized_trades(in_sample, start, split)
+    out_equity, out_drawdown = _equity_from_realized_trades(out_sample, split, end)
     return compute_metrics(in_sample, in_equity, in_drawdown), compute_metrics(out_sample, out_equity, out_drawdown)
 
 
@@ -742,7 +745,12 @@ def write_artifacts(result: dict[str, Any], market: pd.DataFrame) -> None:
     benchmark.to_csv(os.path.join(RESULTS_DIR, "benchmark_comparison.csv"), index=False)
 
     split_date = market["date"].iloc[int(len(market) * 0.7)].strftime("%Y-%m-%d")
-    in_sample_metrics, out_sample_metrics = _split_metrics(trades, split_date)
+    in_sample_metrics, out_sample_metrics = _split_metrics(
+        trades,
+        split_date,
+        market["date"].iloc[0].strftime("%Y-%m-%d"),
+        market["date"].iloc[-1].strftime("%Y-%m-%d"),
+    )
 
     verdict, verdict_reason = determine_recommendation(metrics)
     summary = [
