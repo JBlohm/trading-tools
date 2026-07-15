@@ -695,8 +695,8 @@ def _split_metrics(trades: pd.DataFrame, split_date: str, period_start: str, per
         in_equity, in_drawdown = _equity_from_realized_trades(empty, start, split)
         out_equity, out_drawdown = _equity_from_realized_trades(empty, split, end)
         return compute_metrics(empty, in_equity, in_drawdown), compute_metrics(empty, out_equity, out_drawdown)
-    in_sample = trades[pd.to_datetime(trades["entry_date"]) < split]
-    out_sample = trades[pd.to_datetime(trades["entry_date"]) >= split]
+    in_sample = trades[pd.to_datetime(trades["exit_date"]) < split]
+    out_sample = trades[pd.to_datetime(trades["exit_date"]) >= split]
     in_equity, in_drawdown = _equity_from_realized_trades(in_sample, start, split)
     out_equity, out_drawdown = _equity_from_realized_trades(out_sample, split, end)
     return compute_metrics(in_sample, in_equity, in_drawdown), compute_metrics(out_sample, out_equity, out_drawdown)

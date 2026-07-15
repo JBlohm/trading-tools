@@ -189,6 +189,18 @@ def test_split_metrics_supports_a_no_trade_period():
     assert out_sample["ending_equity"] == bt.STARTING_EQUITY
 
 
+def test_split_metrics_assigns_split_straddling_trades_by_exit_date():
+    trades = pd.DataFrame(
+        [{"entry_date": "2020-12-30", "exit_date": "2021-01-04", "pnl": 100.0, "r_multiple": 1.0}]
+    )
+
+    in_sample, out_sample = bt._split_metrics(trades, "2021-01-01", "2020-01-01", "2021-12-31")
+
+    assert in_sample["trade_count"] == 0
+    assert out_sample["trade_count"] == 1
+    assert out_sample["ending_equity"] == bt.STARTING_EQUITY + 100.0
+
+
 def test_trend_benchmark_realizes_exit_day_close():
     market = pd.DataFrame(
         {
