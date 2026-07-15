@@ -371,7 +371,8 @@ def _build_entry_trade(market: pd.DataFrame, signal_idx: int, entry_idx: int, tr
     entry_row = market.iloc[entry_idx]
     prev_close = signal_row["uso_close"]
     entry_gap_pct = abs(entry_row["uso_open"] / prev_close - 1.0)
-    skip_flags: list[str] = []
+    skip_flags = [f"signal_{reason}" for reason in _skip_reasons(signal_row)]
+    skip_flags.extend(f"entry_{reason}" for reason in _skip_reasons(entry_row))
     if entry_gap_pct > MAX_GAP_PCT:
         skip_flags.append("entry_gap_too_large")
     if entry_row["uso_volume"] <= 0:
@@ -521,7 +522,7 @@ def run_backtest(market: pd.DataFrame) -> dict[str, Any]:
             pending_entry = None
 
         if open_trade is None and pending_entry is None:
-            if not _skip_reasons(prev) and _entry_signal(row, prev):
+            if not _skip_reasons(prev) and not _skip_reasons(row) and _entry_signal(row, prev):
                 pending_entry = {"signal_idx": i, "entry_idx": i + 1}
                 action = "signal_long"
                 reason = "pullback_breakout"
@@ -551,6 +552,9 @@ def run_backtest(market: pd.DataFrame) -> dict[str, Any]:
                 exit_fill = float(row["uso_close"] - SLIPPAGE_PER_SHARE)
             elif row["uso_atr_pct"] > SHOCK_ATR_PCT:
                 exit_reason = "atr_shock_exit"
+                exit_fill = float(row["uso_close"] - SLIPPAGE_PER_SHARE)
+            elif i == len(market) - 1:
+                exit_reason = "end_of_data"
                 exit_fill = float(row["uso_close"] - SLIPPAGE_PER_SHARE)
 
             if exit_reason is not None:
@@ -650,9 +654,11 @@ def compute_benchmarks(market: pd.DataFrame) -> pd.DataFrame:
             equity = shares * row["uso_close"]
         else:
             if in_position:
+                equity = shares * row["uso_close"]
                 in_position = False
                 shares = 0.0
-            equity = trend_equity[-1]
+            else:
+                equity = trend_equity[-1]
         trend_equity.append(equity)
     base["trend_filter"] = trend_equity
     return pd.DataFrame(
@@ -665,6 +671,22 @@ def compute_benchmarks(market: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _equity_from_realized_trades(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if trades.empty:
+        equity = pd.DataFrame({"equity": [STARTING_EQUITY], "date": [pd.Timestamp("1970-01-01")]})
+        return equity, pd.DataFrame({"drawdown": [0.0]})
+
+    ordered = trades.sort_values(["exit_date", "entry_date"]).reset_index(drop=True)
+    equity = STARTING_EQUITY
+    rows = [{"date": pd.to_datetime(ordered.iloc[0]["entry_date"]), "equity": equity}]
+    for _, trade in ordered.iterrows():
+        equity += float(trade["pnl"])
+        rows.append({"date": pd.to_datetime(trade["exit_date"]), "equity": equity})
+    equity_curve = pd.DataFrame(rows)
+    drawdown = equity_curve["equity"] / equity_curve["equity"].cummax() - 1.0
+    return equity_curve, pd.DataFrame({"date": equity_curve["date"], "drawdown": drawdown})
+
+
 def _split_metrics(trades: pd.DataFrame, split_date: str) -> tuple[dict[str, Any], dict[str, Any]]:
     if trades.empty:
         empty = {"trade_count": 0, "expectancy": 0.0, "profit_factor": 0.0, "win_rate": 0.0, "max_drawdown": 0.0, "ending_equity": STARTING_EQUITY, "cagr": 0.0}
@@ -672,9 +694,9 @@ def _split_metrics(trades: pd.DataFrame, split_date: str) -> tuple[dict[str, Any
     split = pd.to_datetime(split_date)
     in_sample = trades[pd.to_datetime(trades["entry_date"]) < split]
     out_sample = trades[pd.to_datetime(trades["entry_date"]) >= split]
-    stub_equity = pd.DataFrame({"equity": [STARTING_EQUITY], "date": [split_date]})
-    stub_dd = pd.DataFrame({"drawdown": [0.0]})
-    return compute_metrics(in_sample, stub_equity, stub_dd), compute_metrics(out_sample, stub_equity, stub_dd)
+    in_equity, in_drawdown = _equity_from_realized_trades(in_sample)
+    out_equity, out_drawdown = _equity_from_realized_trades(out_sample)
+    return compute_metrics(in_sample, in_equity, in_drawdown), compute_metrics(out_sample, out_equity, out_drawdown)
 
 
 
