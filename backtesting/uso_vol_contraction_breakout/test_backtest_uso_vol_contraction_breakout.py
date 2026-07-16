@@ -123,3 +123,113 @@ def test_run_backtest_creates_one_trade_and_artifacts(tmp_path, monkeypatch):
     summary = (Path(tmp_path) / "performance_summary.md").read_text(encoding="utf-8")
     assert "USO Volatility-Contraction Breakout Backtest Summary" in summary
     assert "Benchmark comparison" in summary
+
+
+def test_signal_and_entry_skip_gates_block_event_days(monkeypatch):
+    market = build_market()
+    monkeypatch.setattr(bt, "_pullback_setup_ok", lambda row: bool(row["uso_close"] <= row["uso_ema20"] * 1.01 and row["uso_rsi3"] < 30))
+    signal_idx = len(market) - 4
+    entry_idx = signal_idx + 1
+
+    market.loc[market.index[signal_idx], "is_public_event"] = True
+    assert bt.run_backtest(market)["trades"].empty
+
+    market.loc[market.index[signal_idx], "is_public_event"] = False
+    market.loc[market.index[entry_idx], "is_wednesday"] = True
+    trade, skip_reason, _ = bt._build_entry_trade(market, signal_idx, entry_idx, 1)
+    assert trade is None
+    assert skip_reason is not None
+    assert "entry_eia_inventory_day" in skip_reason
+
+
+def test_open_position_is_realized_on_final_bar(monkeypatch):
+    market = build_market().iloc[:-1].copy()
+    monkeypatch.setattr(bt, "_pullback_setup_ok", lambda row: bool(row["uso_close"] <= row["uso_ema20"] * 1.01 and row["uso_rsi3"] < 30))
+    original_build_entry_trade = bt._build_entry_trade
+
+    def build_unexitable_trade(*args, **kwargs):
+        trade, skip_reason, decision = original_build_entry_trade(*args, **kwargs)
+        if trade is not None:
+            trade["stop_level"] = 0.0
+            trade["target_level"] = float("inf")
+        return trade, skip_reason, decision
+
+    monkeypatch.setattr(bt, "_build_entry_trade", build_unexitable_trade)
+
+    trades = bt.run_backtest(market)["trades"]
+
+    assert len(trades) == 1
+    assert trades.iloc[0]["exit_reason"] == "end_of_data"
+    assert trades.iloc[0]["exit_date"] == market.iloc[-1]["date"].strftime("%Y-%m-%d")
+
+
+def test_split_metrics_use_realized_trade_equity():
+    trades = pd.DataFrame(
+        [
+            {"entry_date": "2020-01-02", "exit_date": "2020-01-10", "pnl": 100.0, "r_multiple": 1.0},
+            {"entry_date": "2020-02-03", "exit_date": "2020-02-10", "pnl": -250.0, "r_multiple": -1.0},
+            {"entry_date": "2021-01-04", "exit_date": "2021-01-11", "pnl": 50.0, "r_multiple": 0.5},
+        ]
+    )
+
+    in_sample, out_sample = bt._split_metrics(trades, "2021-01-01", "2020-01-01", "2021-12-31")
+
+    assert in_sample["ending_equity"] == bt.STARTING_EQUITY - 150.0
+    assert in_sample["max_drawdown"] < 0.0
+    assert -0.01 < in_sample["cagr"] < 0.0
+    assert out_sample["ending_equity"] == bt.STARTING_EQUITY + 50.0
+
+
+def test_split_metrics_supports_a_no_trade_period():
+    in_sample, out_sample = bt._split_metrics(pd.DataFrame(), "2021-01-01", "2020-01-01", "2021-12-31")
+
+    assert in_sample["trade_count"] == 0
+    assert out_sample["trade_count"] == 0
+    assert in_sample["ending_equity"] == bt.STARTING_EQUITY
+    assert out_sample["ending_equity"] == bt.STARTING_EQUITY
+
+
+def test_split_metrics_assigns_split_straddling_trades_by_exit_date():
+    trades = pd.DataFrame(
+        [{"entry_date": "2020-12-30", "exit_date": "2021-01-04", "pnl": 100.0, "r_multiple": 1.0}]
+    )
+
+    in_sample, out_sample = bt._split_metrics(trades, "2021-01-01", "2020-01-01", "2021-12-31")
+
+    assert in_sample["trade_count"] == 0
+    assert out_sample["trade_count"] == 1
+    assert out_sample["ending_equity"] == bt.STARTING_EQUITY + 100.0
+
+
+def test_trend_benchmark_realizes_exit_day_close():
+    market = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-03"]),
+            "uso_close": [100.0, 110.0, 90.0],
+            "uso_ema50": [90.0, 100.0, 100.0],
+            "uso_ema200": [80.0, 90.0, 95.0],
+        }
+    )
+
+    benchmark = bt.compute_benchmarks(market).set_index("strategy")
+
+    assert benchmark.loc["trend_filter", "ending_equity"] == bt.STARTING_EQUITY * 90.0 / 110.0
+
+
+def test_entry_uses_only_open_time_and_signal_day_inputs():
+    market = build_market()
+    signal_idx = len(market) - 4
+    entry_idx = signal_idx + 1
+    baseline, baseline_reason, _ = bt._build_entry_trade(market, signal_idx, entry_idx, 1)
+    assert baseline is not None
+    assert baseline_reason is None
+
+    market.loc[market.index[entry_idx], ["uso_volume", "uso_atr14", "uso_atr_pct", "uso_atr_pctile", "vix_close"]] = [0.0, 999.0, 9.0, 1.0, 99.0]
+    market.loc[market.index[entry_idx], "risk_off_spy"] = True
+    trade, skip_reason, _ = bt._build_entry_trade(market, signal_idx, entry_idx, 1)
+
+    assert trade is not None
+    assert skip_reason is None
+    assert trade["shares"] == baseline["shares"]
+    assert trade["stop_level"] == baseline["stop_level"]
+    assert trade["target_level"] == baseline["target_level"]

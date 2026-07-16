@@ -9,32 +9,32 @@
 - Final recommendation: RESEARCH-ONLY/REJECTED (fewer than 30 trades)
 
 ## Core metrics
-- trade_count: 3
-- win_rate: 66.67%
-- profit_factor: 0.89
-- expectancy: -8.23
-- average_r: -0.01
-- median_r: 0.37
-- max_drawdown: -1.11%
-- ending_equity: 24,975.32
-- cagr: -0.01%
-- avg_hold_days: 2.00
-- gross_profit: 199.22
-- gross_loss: 223.90
+- trade_count: 2
+- win_rate: 50.00%
+- profit_factor: 0.71
+- expectancy: -32.97
+- average_r: -0.18
+- median_r: -0.18
+- max_drawdown: -1.12%
+- ending_equity: 24,934.06
+- cagr: -0.03%
+- avg_hold_days: 3.00
+- gross_profit: 160.50
+- gross_loss: 226.44
 
 ## In-sample metrics
-- trade_count: 3
-- win_rate: 66.67%
-- profit_factor: 0.89
-- expectancy: -8.23
-- average_r: -0.01
-- median_r: 0.37
-- max_drawdown: 0.00%
-- ending_equity: 25,000.00
-- cagr: 0.00%
-- avg_hold_days: 2.00
-- gross_profit: 199.22
-- gross_loss: 223.90
+- trade_count: 2
+- win_rate: 50.00%
+- profit_factor: 0.71
+- expectancy: -32.97
+- average_r: -0.18
+- median_r: -0.18
+- max_drawdown: -0.91%
+- ending_equity: 24,934.06
+- cagr: -0.04%
+- avg_hold_days: 3.00
+- gross_profit: 160.50
+- gross_loss: 226.44
 
 ## Out-of-sample metrics
 - trade_count: 0
@@ -48,7 +48,7 @@
 ## Benchmark comparison
 - buy_hold_uso: ending_equity=10,550.21, cagr=-7.96%, max_drawdown=-89.77%
 - cash: ending_equity=25,000.00, cagr=0.00%, max_drawdown=0.00%
-- trend_filter: ending_equity=84,553.08, cagr=12.42%, max_drawdown=-20.07%
+- trend_filter: ending_equity=17,172.44, cagr=-3.54%, max_drawdown=-44.81%
 
 ## Notes
 - The strategy requires a constructive long regime in USO and SPY.
