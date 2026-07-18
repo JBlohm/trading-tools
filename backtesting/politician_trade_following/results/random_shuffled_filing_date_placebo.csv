@@ -1,0 +1,2 @@
+trade_count,total_return,hit_rate,max_drawdown,turnover,avg_lag_days,tail_loss_days,variant
+1.0,0.003358522665453334,1.0,0.0,0.05,3.0,0.0,random_shuffled_filing_date_placebo
