@@ -34,17 +34,22 @@ sys.path.insert(0, str(_ROOT))
 
 from tools.swing_strategy import (
     ACCOUNT_SIZE_DEFAULT,
+    BASELINE_SYMBOLS,
+    DEFAULT_STRATEGY_VARIANT,
     EQUITY_BROAD_CLUSTER,
     MAX_EQUITY_CLUSTER_POSITIONS,
     MAX_NOTIONAL_PCT,
     MAX_POSITIONS,
     MIN_AVG_VOLUME,
+    REQUIRED_INDICATOR_BARS,
     RISK_PER_TRADE_PCT,
+    STRATEGY_VARIANTS,
     WEEKLY_LOOKBACK_DAYS,
     _check_entry_constraints,
     compute_position_size,
     evaluate_symbol,
     load_state,
+    parse_args,
     run_daily_loop,
     save_state,
 )
@@ -230,6 +235,69 @@ class TestEvaluateSymbol:
         )
         assert result["decision"] == "SKIP"
         assert "insufficient" in result["skip_reason"]
+
+    def test_indicator_warmup_shortfall_uses_clean_history_reason(self):
+        bars = _make_bars(REQUIRED_INDICATOR_BARS - 1)
+
+        result = evaluate_symbol(
+            "SPY", bars, None, None, None, _empty_state(), ACCOUNT_SIZE_DEFAULT
+        )
+
+        assert result["decision"] == "SKIP"
+        assert result["skip_reason"] == (
+            f"insufficient_indicator_history_{len(bars)}_bars_need_{REQUIRED_INDICATOR_BARS}"
+        )
+
+    def test_default_long_only_variant_skips_short_entries_without_proposal(self):
+        from unittest.mock import patch
+
+        bars = _make_bars(250)
+        fake_signal = {"signal_state": "entry_trigger_short", "confidence": 0.9, "scorecard": {}}
+        fake_features = {
+            "close": 100.0,
+            "long_stop": 95.0,
+            "short_stop": 105.0,
+            "r_unit": 5.0,
+        }
+
+        with patch("tools.swing_strategy.calculate_indicators", return_value=fake_features), \
+             patch("tools.swing_strategy.evaluate_breakout_signal", return_value=fake_signal):
+            result = evaluate_symbol("SPY", bars, None, None, None, _empty_state(), ACCOUNT_SIZE_DEFAULT)
+
+        assert result["decision"] == "SKIP"
+        assert result["direction"] == "short"
+        assert result["skip_reason"] == "direction_short_disabled"
+        assert result["proposal_payload"] is None
+
+    def test_legacy_variant_can_still_emit_short_entry_through_proposal_path(self):
+        from unittest.mock import patch
+
+        bars = _make_bars(250)
+        fake_signal = {"signal_state": "entry_trigger_short", "confidence": 0.9, "scorecard": {}}
+        fake_features = {
+            "close": 100.0,
+            "long_stop": 95.0,
+            "short_stop": 105.0,
+            "r_unit": 5.0,
+        }
+
+        with patch("tools.swing_strategy.calculate_indicators", return_value=fake_features), \
+             patch("tools.swing_strategy.evaluate_breakout_signal", return_value=fake_signal):
+            result = evaluate_symbol(
+                "SPY",
+                bars,
+                None,
+                None,
+                None,
+                _empty_state(),
+                ACCOUNT_SIZE_DEFAULT,
+                allowed_entry_directions=frozenset({"long", "short"}),
+            )
+
+        assert result["decision"] == "ENTER"
+        assert result["direction"] == "short"
+        assert result["proposal_payload"] is not None
+        assert result["skip_reason"] is None
 
     def test_hold_with_open_position(self):
         """When in position and signal is no dramatic change → HOLD."""
@@ -428,3 +496,24 @@ class TestRunDailyLoop:
         result = run_daily_loop(symbols, state, mode="dry_run")
         for dec in result["decisions"]:
             assert dec["decision"] != "ENTER", f"Should not ENTER when max positions full: {dec}"
+
+
+# ── CLI / strategy variant defaults ───────────────────────────────────────────
+
+class TestStrategyVariantDefaults:
+    def test_default_variant_is_spy_only_long_only(self):
+        assert DEFAULT_STRATEGY_VARIANT == "spy_long_only"
+        assert STRATEGY_VARIANTS[DEFAULT_STRATEGY_VARIANT]["symbols"] == ["SPY"]
+        assert STRATEGY_VARIANTS[DEFAULT_STRATEGY_VARIANT]["allowed_entry_directions"] == frozenset({"long"})
+
+    def test_default_cli_uses_spy_long_only_variant_without_symbol_override(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["swing_strategy.py", "--dry-run"])
+
+        args = parse_args()
+
+        assert args.strategy_variant == "spy_long_only"
+        assert args.symbols is None
+
+    def test_legacy_variant_preserves_original_six_symbol_universe(self):
+        assert STRATEGY_VARIANTS["legacy_multi_symbol"]["symbols"] == BASELINE_SYMBOLS
+        assert STRATEGY_VARIANTS["legacy_multi_symbol"]["allowed_entry_directions"] == frozenset({"long", "short"})

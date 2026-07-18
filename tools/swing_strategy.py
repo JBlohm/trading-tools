@@ -68,7 +68,22 @@ from tools.trade_proposal import (
 # Strategy configuration
 # ---------------------------------------------------------------------------
 
-DEFAULT_SYMBOLS = ["SPY", "QQQ", "IWM", "GLD", "XLF", "XLE"]
+BASELINE_SYMBOLS = ["SPY", "QQQ", "IWM", "GLD", "XLF", "XLE"]
+SPY_LONG_ONLY_SYMBOLS = ["SPY"]
+DEFAULT_SYMBOLS = SPY_LONG_ONLY_SYMBOLS
+DEFAULT_STRATEGY_VARIANT = "spy_long_only"
+STRATEGY_VARIANTS = {
+    "spy_long_only": {
+        "symbols": SPY_LONG_ONLY_SYMBOLS,
+        "allowed_entry_directions": frozenset({"long"}),
+        "description": "SPY-only long-only paper candidate from TRA-77 research",
+    },
+    "legacy_multi_symbol": {
+        "symbols": BASELINE_SYMBOLS,
+        "allowed_entry_directions": frozenset({"long", "short"}),
+        "description": "Original six-symbol long/short research framework",
+    },
+}
 MACRO_SYMBOLS = {"rates": "TLT", "dollar": "UUP", "credit": "HYG"}
 
 ACCOUNT_SIZE_DEFAULT = 25_000.0
@@ -78,6 +93,7 @@ MAX_POSITIONS = 6
 MIN_POSITION_SHARES = 1
 WEEKLY_LOOKBACK_DAYS = 7
 DAYS_TO_FETCH = 300                # calendar days of history
+REQUIRED_INDICATOR_BARS = 225      # MA_LONG + RANGE_LOOKBACK + retest buffer
 MIN_AVG_VOLUME = 500_000           # skip if ADV below this (illiquidity filter)
 PARTIAL_CLOSE_FRACTION = 1 / 3    # fraction to close on REDUCE
 
@@ -355,6 +371,7 @@ def evaluate_symbol(
     credit_bars: Optional[list],
     state: dict,
     account_nlv: float,
+    allowed_entry_directions: frozenset[str] = STRATEGY_VARIANTS[DEFAULT_STRATEGY_VARIANT]["allowed_entry_directions"],
 ) -> dict:
     """
     Evaluate the swing strategy signal for one symbol and return a decision dict.
@@ -393,6 +410,12 @@ def evaluate_symbol(
 
     if not primary_bars or len(primary_bars) < 50:
         base["skip_reason"] = "insufficient_bars"
+        return base
+
+    if len(primary_bars) < REQUIRED_INDICATOR_BARS:
+        base["skip_reason"] = (
+            f"insufficient_indicator_history_{len(primary_bars)}_bars_need_{REQUIRED_INDICATOR_BARS}"
+        )
         return base
 
     features = calculate_indicators(primary_bars, rate_bars, dollar_bars, credit_bars)
@@ -474,6 +497,11 @@ def evaluate_symbol(
         return base
 
     direction = "long" if sig_state == "entry_trigger_long" else "short"
+    if direction not in allowed_entry_directions:
+        base["direction"] = direction
+        base["skip_reason"] = f"direction_{direction}_disabled"
+        return base
+
     entry_price = features.get("close", 0.0)
     stop_level = features.get("long_stop") if direction == "long" else features.get("short_stop")
 
@@ -527,6 +555,7 @@ def run_daily_loop(
     mode: str = "dry_run",
     host: str = "192.168.2.187",
     port: int = 7497,
+    allowed_entry_directions: frozenset[str] = STRATEGY_VARIANTS[DEFAULT_STRATEGY_VARIANT]["allowed_entry_directions"],
 ) -> dict:
     """
     Run the daily evaluation loop for all symbols.
@@ -589,7 +618,14 @@ def run_daily_loop(
             primary_bars = bars_from_result(result)
 
         dec = evaluate_symbol(
-            symbol, primary_bars, rate_bars, dollar_bars, credit_bars, state, account_nlv
+            symbol,
+            primary_bars,
+            rate_bars,
+            dollar_bars,
+            credit_bars,
+            state,
+            account_nlv,
+            allowed_entry_directions=allowed_entry_directions,
         )
         decisions.append(dec)
 
@@ -625,6 +661,7 @@ Modes:
 Examples:
   python swing_strategy.py --dry-run
   python swing_strategy.py --paper
+  python swing_strategy.py --dry-run --strategy-variant legacy_multi_symbol
   python swing_strategy.py --dry-run --symbols SPY QQQ GLD
   python swing_strategy.py --dry-run --state-file /path/to/swing_state.json
         """,
@@ -638,8 +675,17 @@ Examples:
                         help="Live trading via TWS port 7496")
     parser.set_defaults(mode="dry_run")
 
-    parser.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS,
-                        help=f"Symbols to evaluate (default: {' '.join(DEFAULT_SYMBOLS)})")
+    parser.add_argument("--strategy-variant", choices=sorted(STRATEGY_VARIANTS),
+                        default=DEFAULT_STRATEGY_VARIANT,
+                        help=(
+                            f"Strategy variant (default: {DEFAULT_STRATEGY_VARIANT}; "
+                            "spy_long_only is SPY-only and long-only)"
+                        ))
+    parser.add_argument("--symbols", nargs="+", default=None,
+                        help=(
+                            "Override symbols to evaluate "
+                            f"(default from variant: {' '.join(DEFAULT_SYMBOLS)})"
+                        ))
     parser.add_argument("--state-file", default=DEFAULT_STATE_FILE,
                         help=f"Path to state JSON file (default: {DEFAULT_STATE_FILE})")
     parser.add_argument("--host", default="192.168.2.187",
@@ -657,12 +703,16 @@ def main() -> None:
 
     port = 7497 if args.mode in ("paper", "dry_run") else 7496
 
+    variant = STRATEGY_VARIANTS[args.strategy_variant]
+    symbols = args.symbols if args.symbols is not None else variant["symbols"]
+
     result = run_daily_loop(
-        symbols=args.symbols,
+        symbols=symbols,
         state=state,
         mode=args.mode,
         host=args.host,
         port=port,
+        allowed_entry_directions=variant["allowed_entry_directions"],
     )
     print(json.dumps(result, indent=2))
 
